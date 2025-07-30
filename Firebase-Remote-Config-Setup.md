@@ -18,7 +18,7 @@ Your app now uses **Firebase Firestore** to control paywall behavior remotely. Y
 
 ### **Step 1: Access Firebase Console**
 1. Go to [Firebase Console](https://console.firebase.google.com/)
-2. Select your project: **`fye-ai`**
+2. Select your project: **`thrifty`**
 3. Navigate to **Firestore Database** in the left sidebar
 
 ### **Step 2: Create the Configuration Collection**

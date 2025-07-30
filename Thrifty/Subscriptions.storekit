@@ -1,4 +1,14 @@
 {
+  "appPolicies" : {
+    "eula" : "",
+    "policies" : [
+      {
+        "locale" : "en_US",
+        "policyText" : "",
+        "policyURL" : ""
+      }
+    ]
+  },
   "identifier" : "8C9DF447",
   "nonRenewingSubscriptions" : [
 
@@ -7,7 +17,56 @@
 
   ],
   "settings" : {
-
+    "_failTransactionsEnabled" : false,
+    "_locale" : "en_US",
+    "_storefront" : "USA",
+    "_storeKitErrors" : [
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Load Products"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Purchase"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Verification"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "App Store Sync"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Subscription Status"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "App Transaction"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Manage Subscriptions Sheet"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Refund Request Sheet"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Offer Code Redeem Sheet"
+      }
+    ]
   },
   "subscriptionGroups" : [
     {
@@ -45,11 +104,14 @@
               "locale" : "ar"
             }
           ],
-                      "productID" : "com.thrifty.thrifty.unlimited.yearly",
+          "productID" : "com.thrifty.thrifty.unlimited.yearly",
           "recurringSubscriptionPeriod" : "P1Y",
           "referenceName" : "Thrifty Unlimited Annual",
           "subscriptionGroupID" : "409AF3F7",
-          "type" : "RecurringSubscription"
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
         },
         {
           "adHocOffers" : [
@@ -79,17 +141,20 @@
               "locale" : "ar"
             }
           ],
-                      "productID" : "com.thrifty.thrifty.unlimited.yearly.special",
+          "productID" : "com.thrifty.thrifty.unlimited.yearly.special",
           "recurringSubscriptionPeriod" : "P1Y",
           "referenceName" : "Thrifty Unlimited Annual - Special Offer",
           "subscriptionGroupID" : "409AF3F7",
-          "type" : "RecurringSubscription"
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
         }
       ]
     }
   ],
   "version" : {
-    "major" : 2,
+    "major" : 4,
     "minor" : 0
   }
 }

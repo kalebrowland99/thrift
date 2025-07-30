@@ -1,4 +1,4 @@
-# 📧 Real Email Verification Setup for Fye AI
+# 📧 Real Email Verification Setup for Thrifty
 
 Your iOS app now calls Firebase Cloud Functions to send **real verification emails**! 
 
@@ -33,7 +33,7 @@ chmod +x setup-email-functions.sh
 
 - ✅ **iOS App**: Updated to call Firebase Cloud Functions
 - ✅ **Real Codes**: Generates actual 4-digit verification codes
-- ✅ **Email Templates**: Professional HTML emails with Fye AI branding
+- ✅ **Email Templates**: Professional HTML emails with Thrifty branding
 - ✅ **Security**: 10-minute expiration, proper validation
 - ✅ **Fallback**: Shows codes in console if email fails
 

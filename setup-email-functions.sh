@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Firebase Cloud Functions Setup Script for Fye AI Email Verification
+# Firebase Cloud Functions Setup Script for Thrifty Email Verification
 # Run this script in your project root directory
 
 echo "🚀 Setting up Firebase Cloud Functions for Email Verification..."
@@ -112,12 +112,12 @@ export const sendVerificationEmail = functions.https.onCall(async (data, context
         <body>
           <div class="container">
             <div class="header">
-              <div class="logo">🎵 Fye AI</div>
+              <div class="logo">🛍️ Thrifty</div>
             </div>
             
             <h2>Email Verification</h2>
             <p>Hello!</p>
-            <p>You requested a verification code for your Fye AI account. Enter the code below to continue:</p>
+            <p>You requested a verification code for your Thrifty account. Enter the code below to continue:</p>
             
             <div class="code-box">
               <div class="code">\${verificationCode}</div>
@@ -127,7 +127,7 @@ export const sendVerificationEmail = functions.https.onCall(async (data, context
             <p>If you didn't request this code, you can safely ignore this email.</p>
             
             <div class="footer">
-              <p>Best regards,<br>The Fye AI Team</p>
+              <p>Best regards,<br>The Thrifty Team</p>
               <p style="font-size: 12px; margin-top: 20px;">
                 This is an automated message. Please do not reply to this email.
               </p>
@@ -137,11 +137,11 @@ export const sendVerificationEmail = functions.https.onCall(async (data, context
         </html>
       \`,
       text: \`
-Your Fye AI Verification Code
+Your Thrifty Verification Code
 
 Hello!
 
-You requested a verification code for your Fye AI account. Enter the code below to continue:
+You requested a verification code for your Thrifty account. Enter the code below to continue:
 
 \${verificationCode}
 

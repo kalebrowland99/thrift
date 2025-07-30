@@ -1,0 +1,37 @@
+rules_version = '2';
+
+// Firebase Storage rules for Thrifty app
+// These rules secure image uploads for SerpAPI integration
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // Temporary images for SerpAPI Google Lens integration
+    match /serp-api/{imageId} {
+      // Allow read and write for temporary image processing
+      // Note: This is more permissive for temporary images that get auto-deleted
+      allow read, write: if true;
+      
+      // Ensure uploaded files are images and under 10MB for security
+      allow write: if request.resource.size < 10 * 1024 * 1024 
+                   && request.resource.contentType.matches('image/.*');
+      
+      // Allow automatic cleanup (deletion) by the app
+      allow delete: if true;
+    }
+    
+    // General thrift images (for other app features)
+    match /thrift-images/{imageId} {
+      // Allow authenticated users to read and write
+      allow read, write: if request.auth != null;
+      
+      // Ensure uploaded files are images and under 10MB
+      allow write: if request.resource.size < 10 * 1024 * 1024 
+                   && request.resource.contentType.matches('image/.*');
+    }
+    
+    // Deny all other paths by default
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+} 

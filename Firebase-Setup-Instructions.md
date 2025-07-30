@@ -11,7 +11,7 @@
 2. Create a new project or select existing one
 3. Add iOS app to your Firebase project
    - Bundle ID: `com.TrvzrWViGDUN.LyricsGenerator` (or your actual bundle ID)
-   - App nickname: `Lyric Generator`
+   - App nickname: `Thrifty`
    - Download `GoogleService-Info.plist`
 
 ## Step 2: Add Firebase Dependencies
@@ -29,7 +29,7 @@ Select these products:
 ## Step 3: Configure Firebase
 
 1. Add `GoogleService-Info.plist` to your Xcode project
-2. In `Lyric_GeneratorApp.swift`, add Firebase configuration:
+2. In `ThriftyApp.swift`, add Firebase configuration:
 
 ```swift
 import SwiftUI
@@ -37,7 +37,7 @@ import FirebaseCore
 import GoogleSignIn
 
 @main
-struct Lyric_GeneratorApp: App {
+struct ThriftyApp: App {
     @StateObject private var authManager = AuthenticationManager.shared
     
     init() {
