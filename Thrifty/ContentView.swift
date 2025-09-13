@@ -8,7 +8,7 @@
 import SwiftUI
 import StoreKit
 import AVKit
-import ConfettiSwiftUI
+// import ConfettiSwiftUI // TODO: Add package dependency
 import AVFoundation
 import PhotosUI
 import AuthenticationServices
@@ -3687,6 +3687,8 @@ struct ConfettiPiece: View {
     }
 }
 
+// TODO: Add ConfettiSwiftUI package dependency
+/*
 struct ConfettiView: View {
     @State private var confettiPieces: [Int] = []
     
@@ -3722,6 +3724,7 @@ struct ConfettiView: View {
         }
     }
 }
+*/
 
 struct RatingView: View {
     @Environment(\.dismiss) var dismiss
@@ -4040,7 +4043,7 @@ struct CompletionView: View {
             
             // Confetti overlay
             if showConfetti {
-                ConfettiView()
+                // ConfettiView() // TODO: Add ConfettiSwiftUI package
             }
             
             VStack(spacing: 0) {
@@ -7579,7 +7582,7 @@ struct FinalCongratulationsView: View {
             
             // Confetti overlay
             if showConfetti {
-                ConfettiView()
+                // ConfettiView() // TODO: Add ConfettiSwiftUI package
             }
             
             VStack(spacing: 0) {
@@ -18599,7 +18602,7 @@ struct RecentFindsPageView: View {
                 }
                 
                 if showConfetti {
-                    ConfettiView()
+                    // ConfettiView() // TODO: Add ConfettiSwiftUI package
                         .allowsHitTesting(false)
                 }
                 
@@ -18616,7 +18619,7 @@ struct RecentFindsPageView: View {
                     
                     // Welcome confetti overlay
                     if showWelcomeConfetti {
-                        ConfettiView()
+                        // ConfettiView() // TODO: Add ConfettiSwiftUI package
                             .allowsHitTesting(false)
                     }
                     
