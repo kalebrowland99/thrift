@@ -8,16 +8,61 @@
 import SwiftUI
 import StoreKit
 import AVKit
+import ConfettiSwiftUI
 import AVFoundation
 import PhotosUI
 import AuthenticationServices
 import CryptoKit
 import FirebaseCore
+import GoogleMaps
 import FirebaseAuth
 import FirebaseFunctions
 import FirebaseFirestore
 import FirebaseStorage
 import GoogleSignIn
+import MapKit
+import CoreLocation
+import UIKit
+
+// MARK: - Analysis Results Cache
+class AnalysisResultsCache {
+    static let shared = AnalysisResultsCache()
+    private init() {}
+    
+    private var clothingDetailsCache: [String: ClothingDetails] = [:]
+    private var titleCache: [String: String] = [:]
+    
+    func storeClothingDetails(_ details: ClothingDetails, for image: UIImage) {
+        let key = imageKey(for: image)
+        clothingDetailsCache[key] = details
+    }
+    
+    func storeGeneratedTitle(_ title: String, for image: UIImage) {
+        let key = imageKey(for: image)
+        titleCache[key] = title
+    }
+    
+    func getClothingDetails(for image: UIImage) -> ClothingDetails? {
+        let key = imageKey(for: image)
+        return clothingDetailsCache[key]
+    }
+    
+    func getGeneratedTitle(for image: UIImage) -> String? {
+        let key = imageKey(for: image)
+        return titleCache[key]
+    }
+    
+    private func imageKey(for image: UIImage) -> String {
+        // Create a simple hash based on image data
+        guard let data = image.jpegData(compressionQuality: 0.1) else { return UUID().uuidString }
+        return String(data.hashValue)
+    }
+    
+    func clearCache() {
+        clothingDetailsCache.removeAll()
+        titleCache.removeAll()
+    }
+}
 
 // MARK: - SerpAPI Service
 class SerpAPIService: ObservableObject {
@@ -39,7 +84,7 @@ class SerpAPIService: ObservableObject {
         
         guard let url = components.url else {
             print("🔍 Failed to create URL for eBay search")
-            throw SerpAPIError.invalidURL
+            throw PlacesAPIError.invalidURL
         }
         
         print("🔍 Making eBay search request: \(url.absoluteString)")
@@ -48,7 +93,7 @@ class SerpAPIService: ObservableObject {
         
         guard let httpResponse = response as? HTTPURLResponse else {
             print("🔍 Invalid HTTP response from eBay")
-            throw SerpAPIError.invalidResponse
+            throw PlacesAPIError.invalidResponse
         }
         
         print("🔍 eBay response status: \(httpResponse.statusCode)")
@@ -57,7 +102,7 @@ class SerpAPIService: ObservableObject {
             if let errorString = String(data: data, encoding: .utf8) {
                 print("🔍 eBay error response: \(errorString)")
             }
-            throw SerpAPIError.invalidResponse
+            throw PlacesAPIError.invalidResponse
         }
         
         let result = try JSONDecoder().decode(SerpSearchResult.self, from: data)
@@ -70,12 +115,12 @@ class SerpAPIService: ObservableObject {
             URLQueryItem(name: "api_key", value: apiKey),
             URLQueryItem(name: "engine", value: "google_shopping"),
             URLQueryItem(name: "q", value: query),
-            URLQueryItem(name: "num", value: "20")
+            URLQueryItem(name: "num", value: "50")
         ]
         
         guard let url = components.url else {
             print("🔍 Failed to create URL for Google Shopping")
-            throw SerpAPIError.invalidURL
+            throw PlacesAPIError.invalidURL
         }
         
         print("🔍 Making Google Shopping request: \(url.absoluteString)")
@@ -84,7 +129,7 @@ class SerpAPIService: ObservableObject {
         
         guard let httpResponse = response as? HTTPURLResponse else {
             print("🔍 Invalid HTTP response from Google Shopping")
-            throw SerpAPIError.invalidResponse
+            throw PlacesAPIError.invalidResponse
         }
         
         print("🔍 Google Shopping response status: \(httpResponse.statusCode)")
@@ -93,7 +138,7 @@ class SerpAPIService: ObservableObject {
             if let errorString = String(data: data, encoding: .utf8) {
                 print("🔍 Google Shopping error response: \(errorString)")
             }
-            throw SerpAPIError.invalidResponse
+            throw PlacesAPIError.invalidResponse
         }
         
         let result = try JSONDecoder().decode(SerpSearchResult.self, from: data)
@@ -102,36 +147,26 @@ class SerpAPIService: ObservableObject {
     
     // MARK: - Image-based Search Methods
     
-    func searchWithImage(imageData: Data, query: String? = nil) async throws -> SerpSearchResult {
-        print("🔍 Attempting Google Lens visual search with Firebase Storage...")
+    func searchWithImage(imageData: Data) async throws -> SerpSearchResult {
+        print("🔍 Using Google Lens API for visual product identification...")
         
-        // Try Google Lens API first for visual product matching
+        // Use Google Lens API for the best visual product matching
         do {
-            return try await searchGoogleLens(imageData: imageData, query: query)
+            return try await searchGoogleLens(imageData: imageData)
         } catch {
-            print("🔍 Google Lens failed, falling back to enhanced text search: \(error)")
+            print("🔍 Google Lens search failed: \(error)")
             
-            // Generate a comprehensive search query based on image context
-            let searchQuery = query ?? "vintage fashion clothing accessories thrift"
-            
-            // Use direct text-based search strategies optimized for fashion/thrift items
-            do {
-                // First try Google Shopping for comprehensive product results
-                print("🔍 Trying Google Shopping for: \(searchQuery)")
-                return try await searchGoogleShopping(query: searchQuery)
-            } catch {
-                print("🔍 Google Shopping failed (\(error)), trying eBay for vintage items")
-                // Fallback to eBay which has excellent vintage/used item coverage
-                return try await searchEBayItems(query: searchQuery, condition: "used")
-            }
+            // Fallback to eBay for vintage items if Google Lens fails
+            print("🔍 Falling back to eBay for vintage items")
+            return try await searchEBayItems(query: "vintage fashion clothing accessories", condition: "used")
         }
     }
     
-    private func searchGoogleLens(imageData: Data, query: String? = nil) async throws -> SerpSearchResult {
+    private func searchGoogleLens(imageData: Data) async throws -> SerpSearchResult {
         // Convert Data to UIImage for Firebase Storage
         guard let uiImage = UIImage(data: imageData) else {
             print("🔍 Failed to convert image data to UIImage")
-            throw SerpAPIError.invalidResponse
+            throw PlacesAPIError.invalidResponse
         }
         
         print("🔍 Uploading image to Firebase Storage for Google Lens...")
@@ -141,22 +176,20 @@ class SerpAPIService: ObservableObject {
         
         print("🔍 Image uploaded successfully, making Google Lens request with URL: \(publicImageURL)")
         
-        // Now make the Google Lens API call with the public URL
+        // Make Google Lens API call with image URL - pure visual search
         var components = URLComponents(string: baseURL)!
         components.queryItems = [
             URLQueryItem(name: "api_key", value: apiKey),
             URLQueryItem(name: "engine", value: "google_lens"),
             URLQueryItem(name: "url", value: publicImageURL),
-            URLQueryItem(name: "num", value: "20")
+            URLQueryItem(name: "num", value: "50"),
+            URLQueryItem(name: "hl", value: "en"),  // Language
+            URLQueryItem(name: "gl", value: "us")   // Country
         ]
-        
-        if let query = query {
-            components.queryItems?.append(URLQueryItem(name: "q", value: query))
-        }
         
         guard let url = components.url else {
             print("🔍 Failed to create URL for Google Lens search")
-            throw SerpAPIError.invalidURL
+            throw PlacesAPIError.invalidURL
         }
         
         print("🔍 Making Google Lens request: \(url.absoluteString)")
@@ -165,7 +198,7 @@ class SerpAPIService: ObservableObject {
         
         guard let httpResponse = response as? HTTPURLResponse else {
             print("🔍 Invalid HTTP response from Google Lens")
-            throw SerpAPIError.invalidResponse
+            throw PlacesAPIError.invalidResponse
         }
         
         print("🔍 Google Lens response status: \(httpResponse.statusCode)")
@@ -174,26 +207,22 @@ class SerpAPIService: ObservableObject {
             if let errorString = String(data: data, encoding: .utf8) {
                 print("🔍 Google Lens error response: \(errorString)")
             }
-            throw SerpAPIError.invalidResponse
+            throw PlacesAPIError.invalidResponse
         }
         
         let result = try JSONDecoder().decode(SerpSearchResult.self, from: data)
         
-        // Clean up: Delete the temporary image from Firebase Storage after successful API call
-        // Note: We'll implement this as a background task to avoid blocking the response
-        Task.detached {
-            // Extract the path from the URL for deletion
-            if let urlComponents = URLComponents(string: publicImageURL),
-               let path = urlComponents.path.dropFirst().description.removingPercentEncoding {
-                FirebaseStorageService.shared.deleteImage(at: path) { error in
-                    if let error = error {
-                        print("⚠️ Failed to clean up temporary image: \(error.localizedDescription)")
-                    } else {
-                        print("🧹 Temporary image cleaned up successfully")
-                    }
-                }
-            }
-        }
+        // Debug logging for Google Lens results
+        let visualCount = result.visualMatches?.count ?? 0
+        let organicCount = result.organicResults?.count ?? 0
+        let imageCount = result.imageResults?.count ?? 0
+        let totalCount = visualCount + organicCount + imageCount
+        
+        print("🔍 Google Lens API Results:")
+        print("   📸 Visual Matches: \(visualCount)")
+        print("   🔗 Organic Results: \(organicCount)")
+        print("   🖼️ Image Results: \(imageCount)")
+        print("   📊 Total Results: \(totalCount)")
         
         return result
     }
@@ -201,6 +230,326 @@ class SerpAPIService: ObservableObject {
 
     
 
+}
+
+// MARK: - Cache Models
+struct CachedMarketData: Codable {
+    let searchResult: SerpSearchResult
+    let cachedAt: Date
+    let searchQuery: String
+    let hasCustomImage: Bool
+    
+    // Cache persists indefinitely - only cleared manually when new photos are added
+    var isValid: Bool {
+        return true // Never expires
+    }
+}
+
+struct CachedOpenAIResponse: Codable {
+    let response: String
+    let prompt: String
+    let tool: String
+    let input: String
+    let cachedAt: Date
+    
+    // Check if cache is still valid (7 days for OpenAI responses)
+    var isValid: Bool {
+        Date().timeIntervalSince(cachedAt) < 7 * 24 * 60 * 60 // 7 days
+    }
+}
+
+// MARK: - Market Data Cache Service
+class MarketDataCache {
+    static let shared = MarketDataCache()
+    private init() {}
+    
+    private let userDefaults = UserDefaults.standard
+    private let marketDataKey = "cached_market_data"
+    private let openaiResponseKey = "cached_openai_responses"
+    private let searchQueryCacheKey = "cached_search_queries" // New: Cache by search query as fallback
+    
+    // MARK: - Market Data Caching
+    
+    func saveMarketData(_ data: SerpSearchResult, for songId: String, searchQuery: String, hasCustomImage: Bool) {
+        let cacheKey = generateMarketDataCacheKey(songId: songId, hasCustomImage: hasCustomImage)
+        let searchQueryKey = generateSearchQueryCacheKey(searchQuery: searchQuery, hasCustomImage: hasCustomImage)
+        
+        let cachedData = CachedMarketData(
+            searchResult: data,
+            cachedAt: Date(),
+            searchQuery: searchQuery,
+            hasCustomImage: hasCustomImage
+        )
+        
+        do {
+            let encoded = try JSONEncoder().encode(cachedData)
+            
+            // Save by song ID (primary cache)
+            var allCachedData = getAllMarketData()
+            allCachedData[cacheKey] = encoded
+            
+            // Save by search query (fallback cache)
+            var searchQueryCache = getAllSearchQueryCache()
+            searchQueryCache[searchQueryKey] = encoded
+            
+            // Clean up expired entries
+            cleanupExpiredMarketData(&allCachedData)
+            cleanupExpiredSearchQueryCache(&searchQueryCache)
+            
+            userDefaults.set(allCachedData, forKey: marketDataKey)
+            userDefaults.set(searchQueryCache, forKey: searchQueryCacheKey)
+            
+            print("✅ Market data cached for song ID key: \(cacheKey)")
+            print("✅ Market data cached for search query key: \(searchQueryKey)")
+            print("🗂️ Total cached entries: \(allCachedData.count) songs, \(searchQueryCache.count) queries")
+        } catch {
+            print("❌ Failed to cache market data: \(error)")
+        }
+    }
+    
+    func getMarketData(for songId: String, hasCustomImage: Bool) -> SerpSearchResult? {
+        let cacheKey = generateMarketDataCacheKey(songId: songId, hasCustomImage: hasCustomImage)
+        let allCachedData = getAllMarketData()
+        
+        guard let data = allCachedData[cacheKey],
+              let cachedData = try? JSONDecoder().decode(CachedMarketData.self, from: data) else {
+            print("🔍 No cached market data found for song ID: \(songId)")
+            return nil
+        }
+        
+        if cachedData.isValid {
+            print("✅ Found valid cached market data for song ID: \(songId)")
+            return cachedData.searchResult
+        } else {
+            print("⏰ Cached market data expired for song ID: \(songId)")
+            // Remove expired entry
+            removeMarketData(for: songId, hasCustomImage: hasCustomImage)
+            return nil
+        }
+    }
+    
+    // New: Get market data by search query as fallback
+    func getMarketDataByQuery(searchQuery: String, hasCustomImage: Bool) -> SerpSearchResult? {
+        let searchQueryKey = generateSearchQueryCacheKey(searchQuery: searchQuery, hasCustomImage: hasCustomImage)
+        let searchQueryCache = getAllSearchQueryCache()
+        
+        guard let data = searchQueryCache[searchQueryKey],
+              let cachedData = try? JSONDecoder().decode(CachedMarketData.self, from: data) else {
+            print("🔍 No cached market data found for search query: \(searchQuery)")
+            return nil
+        }
+        
+        if cachedData.isValid {
+            print("✅ Found valid cached market data for search query: \(searchQuery)")
+            return cachedData.searchResult
+        } else {
+            print("⏰ Cached market data expired for search query: \(searchQuery)")
+            // Remove expired entry
+            removeMarketDataByQuery(searchQuery: searchQuery, hasCustomImage: hasCustomImage)
+            return nil
+        }
+    }
+    
+    func removeMarketData(for songId: String, hasCustomImage: Bool) {
+        let cacheKey = generateMarketDataCacheKey(songId: songId, hasCustomImage: hasCustomImage)
+        var allCachedData = getAllMarketData()
+        allCachedData.removeValue(forKey: cacheKey)
+        userDefaults.set(allCachedData, forKey: marketDataKey)
+        print("🗑️ Removed cached market data for song ID: \(songId)")
+    }
+    
+    // New: Remove market data by search query
+    func removeMarketDataByQuery(searchQuery: String, hasCustomImage: Bool) {
+        let searchQueryKey = generateSearchQueryCacheKey(searchQuery: searchQuery, hasCustomImage: hasCustomImage)
+        var searchQueryCache = getAllSearchQueryCache()
+        searchQueryCache.removeValue(forKey: searchQueryKey)
+        userDefaults.set(searchQueryCache, forKey: searchQueryCacheKey)
+        print("🗑️ Removed cached market data for search query: \(searchQuery)")
+    }
+    
+    // MARK: - OpenAI Response Caching
+    
+    func saveOpenAIResponse(_ response: String, for tool: String, input: String, prompt: String) {
+        let cacheKey = generateOpenAICacheKey(tool: tool, input: input)
+        let cachedResponse = CachedOpenAIResponse(
+            response: response,
+            prompt: prompt,
+            tool: tool,
+            input: input,
+            cachedAt: Date()
+        )
+        
+        do {
+            let encoded = try JSONEncoder().encode(cachedResponse)
+            var allCachedResponses = getAllOpenAIResponses()
+            allCachedResponses[cacheKey] = encoded
+            
+            // Clean up expired entries
+            cleanupExpiredOpenAIResponses(&allCachedResponses)
+            
+            userDefaults.set(allCachedResponses, forKey: openaiResponseKey)
+            print("✅ OpenAI response cached for tool: \(tool), input: \(input.prefix(50))...")
+        } catch {
+            print("❌ Failed to cache OpenAI response: \(error)")
+        }
+    }
+    
+    func getOpenAIResponse(for tool: String, input: String) -> String? {
+        let cacheKey = generateOpenAICacheKey(tool: tool, input: input)
+        let allCachedResponses = getAllOpenAIResponses()
+        
+        guard let data = allCachedResponses[cacheKey],
+              let cachedResponse = try? JSONDecoder().decode(CachedOpenAIResponse.self, from: data) else {
+            return nil
+        }
+        
+        if cachedResponse.isValid {
+            print("✅ Found valid cached OpenAI response for tool: \(tool)")
+            return cachedResponse.response
+        } else {
+            print("⏰ Cached OpenAI response expired for tool: \(tool)")
+            // Remove expired entry
+            removeOpenAIResponse(for: tool, input: input)
+            return nil
+        }
+    }
+    
+    func removeOpenAIResponse(for tool: String, input: String) {
+        let cacheKey = generateOpenAICacheKey(tool: tool, input: input)
+        var allCachedResponses = getAllOpenAIResponses()
+        allCachedResponses.removeValue(forKey: cacheKey)
+        userDefaults.set(allCachedResponses, forKey: openaiResponseKey)
+        print("🗑️ Removed cached OpenAI response for tool: \(tool)")
+    }
+    
+    // MARK: - Cache Management
+    
+    func clearAllCache() {
+        userDefaults.removeObject(forKey: marketDataKey)
+        userDefaults.removeObject(forKey: openaiResponseKey)
+        userDefaults.removeObject(forKey: searchQueryCacheKey)
+        print("🗑️ Cleared all cache data")
+    }
+    
+    func getCacheStats() -> (marketDataCount: Int, openaiResponseCount: Int, searchQueryCount: Int) {
+        let marketDataCount = getAllMarketData().count
+        let openaiResponseCount = getAllOpenAIResponses().count
+        let searchQueryCount = getAllSearchQueryCache().count
+        return (marketDataCount, openaiResponseCount, searchQueryCount)
+    }
+    
+    // Debug function to print cache contents
+    func debugCacheContents() {
+        let stats = getCacheStats()
+        print("🔍 Cache Debug:")
+        print("  - Market Data (Song ID): \(stats.marketDataCount) entries")
+        print("  - Search Query Cache: \(stats.searchQueryCount) entries") 
+        print("  - OpenAI Responses: \(stats.openaiResponseCount) entries")
+        
+        let marketData = getAllMarketData()
+        if !marketData.isEmpty {
+            print("📋 Market Data Keys:")
+            for key in marketData.keys.sorted() {
+                print("  - \(key)")
+            }
+        }
+        
+        let searchQueryData = getAllSearchQueryCache()
+        if !searchQueryData.isEmpty {
+            print("📋 Search Query Keys:")
+            for key in searchQueryData.keys.sorted() {
+                print("  - \(key)")
+            }
+        }
+    }
+    
+    // Debug function to clear cache for testing (optional)
+    func clearCacheForTesting() {
+        clearAllCache()
+        print("🧪 Cache cleared for testing - next API calls will be fresh")
+    }
+    
+    // MARK: - Private Helper Methods
+    
+    private func generateMarketDataCacheKey(songId: String, hasCustomImage: Bool) -> String {
+        return "market_\(songId)_\(hasCustomImage)"
+    }
+    
+    private func generateSearchQueryCacheKey(searchQuery: String, hasCustomImage: Bool) -> String {
+        let normalizedQuery = searchQuery.lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: " ", with: "_")
+        return "query_\(normalizedQuery.hashValue)_\(hasCustomImage)"
+    }
+    
+    private func generateOpenAICacheKey(tool: String, input: String) -> String {
+        let normalizedTool = tool.lowercased().replacingOccurrences(of: " ", with: "_")
+        let normalizedInput = input.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        return "openai_\(normalizedTool)_\(normalizedInput.hashValue)"
+    }
+    
+    private func getAllMarketData() -> [String: Data] {
+        return userDefaults.object(forKey: marketDataKey) as? [String: Data] ?? [:]
+    }
+    
+    private func getAllSearchQueryCache() -> [String: Data] {
+        return userDefaults.object(forKey: searchQueryCacheKey) as? [String: Data] ?? [:]
+    }
+    
+    private func getAllOpenAIResponses() -> [String: Data] {
+        return userDefaults.object(forKey: openaiResponseKey) as? [String: Data] ?? [:]
+    }
+    
+    private func cleanupExpiredMarketData(_ cache: inout [String: Data]) {
+        let keysToRemove = cache.compactMap { key, data -> String? in
+            guard let cachedData = try? JSONDecoder().decode(CachedMarketData.self, from: data) else {
+                return key // Remove invalid entries
+            }
+            return cachedData.isValid ? nil : key
+        }
+        
+        for key in keysToRemove {
+            cache.removeValue(forKey: key)
+        }
+        
+        if !keysToRemove.isEmpty {
+            print("🧹 Cleaned up \(keysToRemove.count) expired market data entries")
+        }
+    }
+    
+    private func cleanupExpiredSearchQueryCache(_ cache: inout [String: Data]) {
+        let keysToRemove = cache.compactMap { key, data -> String? in
+            guard let cachedData = try? JSONDecoder().decode(CachedMarketData.self, from: data) else {
+                return key // Remove invalid entries
+            }
+            return cachedData.isValid ? nil : key
+        }
+        
+        for key in keysToRemove {
+            cache.removeValue(forKey: key)
+        }
+        
+        if !keysToRemove.isEmpty {
+            print("🧹 Cleaned up \(keysToRemove.count) expired search query cache entries")
+        }
+    }
+    
+    private func cleanupExpiredOpenAIResponses(_ cache: inout [String: Data]) {
+        let keysToRemove = cache.compactMap { key, data -> String? in
+            guard let cachedResponse = try? JSONDecoder().decode(CachedOpenAIResponse.self, from: data) else {
+                return key // Remove invalid entries
+            }
+            return cachedResponse.isValid ? nil : key
+        }
+        
+        for key in keysToRemove {
+            cache.removeValue(forKey: key)
+        }
+        
+        if !keysToRemove.isEmpty {
+            print("🧹 Cleaned up \(keysToRemove.count) expired OpenAI response entries")
+        }
+    }
 }
 
 // MARK: - SerpAPI Models
@@ -351,12 +700,941 @@ struct PriceInfo: Codable, Equatable {
     }
 }
 
-enum SerpAPIError: Error {
+enum PlacesAPIError: Error {
     case invalidURL
     case invalidResponse
     case noResults
     case decodingError
 }
+
+// MARK: - Thrift Store Map Service
+class ThriftStoreMapService: ObservableObject {
+    private let apiKey = APIKeys.googleMaps
+    private let baseURL = "https://places.googleapis.com/v1/places:searchNearby"
+    
+    @Published var thriftStores: [ThriftStore] = []
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    
+    func searchNearbyThriftStores(latitude: Double, longitude: Double, radius: Int = 10) async {
+        await MainActor.run {
+            isLoading = true
+            errorMessage = nil
+        }
+        
+        print("🔍 Searching for real thrift stores near (\(latitude), \(longitude))")
+        
+        do {
+            // First try nearby search
+            var stores = try await performThriftStoreSearch(latitude: latitude, longitude: longitude, radius: radius)
+            
+            // If we don't have enough thrift stores, try text search as fallback
+            if stores.count < 3 {
+                print("🔍 Not enough thrift stores found (\(stores.count)), trying text search fallback...")
+                let textSearchStores = try await performTextSearchForThriftStores(latitude: latitude, longitude: longitude)
+                
+                // Combine results, avoiding duplicates
+                let existingIds = Set(stores.map { $0.id })
+                let newStores = textSearchStores.filter { !existingIds.contains($0.id) }
+                stores.append(contentsOf: newStores)
+                
+                print("🔍 Combined search found \(stores.count) total thrift stores")
+            }
+            
+            await MainActor.run {
+                self.thriftStores = stores
+                self.isLoading = false
+            }
+        } catch {
+            print("❌ ThriftStoreMapService error: \(error)")
+            await MainActor.run {
+                self.errorMessage = error.localizedDescription
+                self.isLoading = false
+            }
+        }
+    }
+    
+    // New method for text search fallback
+    private func performTextSearchForThriftStores(latitude: Double, longitude: Double) async throws -> [ThriftStore] {
+        let textSearchURL = "https://places.googleapis.com/v1/places:searchText"
+        
+        guard let url = URL(string: textSearchURL) else {
+            throw PlacesAPIError.invalidURL
+        }
+        
+        // Create request body for text search
+        let requestBody: [String: Any] = [
+            "textQuery": "thrift store near me",
+            "maxResultCount": 10
+        ]
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
+        request.setValue("places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.primaryType", forHTTPHeaderField: "X-Goog-FieldMask")
+        
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+        } catch {
+            throw PlacesAPIError.invalidURL
+        }
+        
+        print("🔍 Text search for thrift stores...")
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw PlacesAPIError.invalidResponse
+        }
+        
+        print("🗺️ Text search response status: \(httpResponse.statusCode)")
+        
+        if httpResponse.statusCode != 200 {
+            if let errorString = String(data: data, encoding: .utf8) {
+                print("🗺️ Text search error response: \(errorString)")
+            }
+            return [] // Return empty array instead of throwing to allow nearby search results to still show
+        }
+        
+        let result = try JSONDecoder().decode(NewGooglePlacesResult.self, from: data)
+        
+        let stores = result.places?.compactMap { place in
+            ThriftStore(from: place)
+        } ?? []
+        
+        print("🔍 Text search found \(stores.count) thrift stores")
+        
+        // Filter to only nearby stores (within reasonable distance)
+        let nearbyStores = stores.filter { store in
+            let distance = calculateDistance(lat1: latitude, lon1: longitude, lat2: store.latitude, lon2: store.longitude)
+            return distance <= 25.0 // 25km max distance
+        }
+        
+        print("🔍 \(nearbyStores.count) text search stores are within 25km")
+        
+        return nearbyStores
+    }
+    
+    // Helper function to calculate distance between two coordinates
+    private func calculateDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double) -> Double {
+        let earthRadius = 6371.0 // Earth's radius in kilometers
+        
+        let dLat = (lat2 - lat1) * .pi / 180.0
+        let dLon = (lon2 - lon1) * .pi / 180.0
+        
+        let a = sin(dLat / 2) * sin(dLat / 2) + cos(lat1 * .pi / 180.0) * cos(lat2 * .pi / 180.0) * sin(dLon / 2) * sin(dLon / 2)
+        let c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        
+        return earthRadius * c
+    }
+    
+    private func performThriftStoreSearch(latitude: Double, longitude: Double, radius: Int) async throws -> [ThriftStore] {
+        // Convert radius from km to meters (Google Places API uses meters)
+        let radiusInMeters = radius * 1000
+        
+        guard let url = URL(string: baseURL) else {
+            throw PlacesAPIError.invalidURL
+        }
+        
+        // Create request body for new Places API with expanded types to catch thrift stores
+        let requestBody: [String: Any] = [
+            "includedTypes": ["store", "discount_store", "clothing_store"], // Expanded to include more thrift store types
+            "maxResultCount": 20,
+            "locationRestriction": [
+                "circle": [
+                    "center": [
+                        "latitude": latitude,
+                        "longitude": longitude
+                    ],
+                    "radius": min(radiusInMeters, 50000) // Max 50km
+                ]
+            ]
+        ]
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "X-Goog-Api-Key")
+        request.setValue("places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.primaryType", forHTTPHeaderField: "X-Goog-FieldMask")
+        
+        // Print bundle ID for debugging
+        if let bundleId = Bundle.main.bundleIdentifier {
+            print("🗺️ App bundle ID: \(bundleId)")
+        }
+        
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+        } catch {
+            throw PlacesAPIError.invalidURL
+        }
+        
+        print("🗺️ Searching for thrift stores near: \(latitude), \(longitude)")
+        print("🔍 New Google Places API request with expanded types")
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw PlacesAPIError.invalidResponse
+        }
+        
+        print("🗺️ Places API response status: \(httpResponse.statusCode)")
+        
+        if httpResponse.statusCode != 200 {
+            if let errorString = String(data: data, encoding: .utf8) {
+                print("🗺️ Places API error response: \(errorString)")
+            }
+            throw PlacesAPIError.invalidResponse
+        }
+        
+        let result = try JSONDecoder().decode(NewGooglePlacesResult.self, from: data)
+        
+        let stores = result.places?.compactMap { place in
+            ThriftStore(from: place)
+        } ?? []
+        
+        print("🗺️ New Google Places API found \(stores.count) potential stores")
+        
+        // Debug: Print first few stores to see what we're getting
+        for (index, store) in stores.prefix(5).enumerated() {
+            print("🔍 Store \(index + 1): '\(store.title)' at \(store.address)")
+        }
+        
+        // Enhanced filter for thrift stores with better keyword matching
+        let thriftKeywords = [
+            // Core thrift terms
+            "thrift", "thrifting", "thrifted", "thrift store", "thrift shop",
+            
+            // Secondhand terms
+            "secondhand", "second-hand", "second hand", "preloved", "pre-loved", "pre loved",
+            
+            // Resale terms
+            "resale", "resell", "recycled", "reclaimed", "hand-me-down",
+            
+            // Store types and names
+            "consignment", "donation", "donation center", "vintage", "used", 
+            "antique", "flea market", "streetwear", "retro",
+            
+            // Popular chains and store names
+            "goodwill", "salvation army", "savers", "value village", "platos closet", "plato's closet",
+            "buffalo exchange", "crossroads trading", "crossroads", "wasteland", "beacon's closet",
+            "out of the closet", "community thrift", "relove", "eye thrift", "born again",
+            "2nd street", "second street",
+            
+            // Other terms
+            "charity", "discount"
+        ]
+        
+        let thriftStores = stores.filter { store in
+            let searchText = "\(store.title) \(store.address)".lowercased()
+            let isThriftStore = thriftKeywords.contains { keyword in
+                searchText.contains(keyword)
+            }
+            
+            if isThriftStore {
+                print("✅ Found thrift store: '\(store.title)'")
+            }
+            
+            return isThriftStore
+        }
+        
+        print("🗺️ Filtered to \(thriftStores.count) thrift stores")
+        
+        // If we still have few thrift stores, let's be more inclusive for testing
+        if thriftStores.count < 3 {
+            print("⚠️ Only found \(thriftStores.count) thrift stores, showing additional discount/clothing stores for testing")
+            // Include stores that might be thrift stores based on type
+            let additionalStores = stores.filter { store in
+                let searchText = "\(store.title) \(store.address)".lowercased()
+                let isAlreadyIncluded = thriftKeywords.contains { keyword in
+                    searchText.contains(keyword)
+                }
+                // Include discount stores and some clothing stores that might be thrift stores
+                return !isAlreadyIncluded && (searchText.contains("discount") || searchText.contains("vintage") || searchText.contains("used"))
+            }
+            return thriftStores + additionalStores.prefix(5)
+        }
+        
+        return thriftStores
+    }
+}
+
+// MARK: - Thrift Store Data Models
+struct ThriftStore: Identifiable, Codable {
+    let id = UUID()
+    let title: String
+    let address: String
+    let latitude: Double
+    let longitude: Double
+    let rating: Double?
+    let reviews: Int?
+    let phoneNumber: String?
+    let website: String?
+    let hours: String?
+    let thumbnail: String?
+    
+    init(from place: NewGooglePlace) {
+        self.title = place.displayName?.text ?? "Store"
+        self.address = place.formattedAddress ?? ""
+        self.latitude = place.location.latitude
+        self.longitude = place.location.longitude
+        self.rating = place.rating
+        self.reviews = place.userRatingCount
+        self.phoneNumber = nil // Not available in basic search
+        self.website = nil // Not available in basic search
+        self.hours = nil // Not available in basic search
+        self.thumbnail = nil // Not available in basic search
+    }
+    
+    // Legacy initializer for backward compatibility
+    init(from place: GooglePlace) {
+        self.title = place.name
+        self.address = place.vicinity ?? place.formatted_address ?? ""
+        self.latitude = place.geometry.location.lat
+        self.longitude = place.geometry.location.lng
+        self.rating = place.rating
+        self.reviews = place.user_ratings_total
+        self.phoneNumber = nil // Not available in Nearby Search
+        self.website = nil // Not available in Nearby Search
+        self.hours = nil // Not available in Nearby Search
+        self.thumbnail = place.photos?.first?.photo_reference
+    }
+    
+    // Custom initializer for mock data
+    init(title: String, address: String, latitude: Double, longitude: Double, rating: Double?, reviews: Int?, phoneNumber: String?, website: String?, hours: String?, thumbnail: String?) {
+        self.title = title
+        self.address = address
+        self.latitude = latitude
+        self.longitude = longitude
+        self.rating = rating
+        self.reviews = reviews
+        self.phoneNumber = phoneNumber
+        self.website = website
+        self.hours = hours
+        self.thumbnail = thumbnail
+    }
+}
+
+// MARK: - New Google Places API Models
+struct NewGooglePlacesResult: Codable {
+    let places: [NewGooglePlace]?
+}
+
+struct NewGooglePlace: Codable {
+    let id: String
+    let displayName: PlaceDisplayName?
+    let formattedAddress: String?
+    let location: NewPlaceLocation
+    let rating: Double?
+    let userRatingCount: Int?
+    let primaryType: String?
+}
+
+struct PlaceDisplayName: Codable {
+    let text: String
+}
+
+struct NewPlaceLocation: Codable {
+    let latitude: Double
+    let longitude: Double
+}
+
+// MARK: - Legacy Google Places API Models (for backward compatibility)
+struct GooglePlacesResult: Codable {
+    let results: [GooglePlace]
+    let status: String
+    let error_message: String?
+}
+
+struct GooglePlace: Codable {
+    let place_id: String
+    let name: String
+    let vicinity: String?
+    let formatted_address: String?
+    let geometry: PlaceGeometry
+    let rating: Double?
+    let user_ratings_total: Int?
+    let photos: [PlacePhoto]?
+    let types: [String]
+    
+    enum CodingKeys: String, CodingKey {
+        case place_id, name, vicinity, formatted_address, geometry, rating, user_ratings_total, photos, types
+    }
+}
+
+struct PlaceGeometry: Codable {
+    let location: PlaceLocation
+}
+
+struct PlaceLocation: Codable {
+    let lat: Double
+    let lng: Double
+}
+
+struct PlacePhoto: Codable {
+    let photo_reference: String
+    let height: Int
+    let width: Int
+}
+
+// MARK: - Enhanced Location Manager
+class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
+    private let locationManager = CLLocationManager()
+    private var locationUpdateTimer: Timer?
+    
+    @Published var location: CLLocation?
+    @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
+    @Published var isTrackingLocation = false
+    
+    // Singleton to ensure consistent location tracking across the app
+    static let shared = LocationManager()
+    
+    override init() {
+        super.init()
+        locationManager.delegate = self
+        locationManager.desiredAccuracy = kCLLocationAccuracyBest
+        locationManager.distanceFilter = 10 // Update when user moves 10 meters
+        authorizationStatus = locationManager.authorizationStatus
+        
+        // Start location tracking immediately
+        startLocationTracking()
+        
+        // Track app lifecycle to maintain location services
+        NotificationCenter.default.addObserver(
+            self, 
+            selector: #selector(appDidBecomeActive), 
+            name: UIApplication.didBecomeActiveNotification, 
+            object: nil
+        )
+        
+        NotificationCenter.default.addObserver(
+            self, 
+            selector: #selector(appWillResignActive), 
+            name: UIApplication.willResignActiveNotification, 
+            object: nil
+        )
+    }
+    
+    deinit {
+        locationUpdateTimer?.invalidate()
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    @objc private func appDidBecomeActive() {
+        print("📍 App became active - ensuring location tracking")
+        startLocationTracking()
+    }
+    
+    @objc private func appWillResignActive() {
+        print("📍 App will resign active - maintaining background location if possible")
+        // Keep location services running for when app returns
+    }
+    
+    func startLocationTracking() {
+        guard !isTrackingLocation else { return }
+        
+        print("📍 Starting enhanced location tracking...")
+        isTrackingLocation = true
+        
+        switch authorizationStatus {
+        case .notDetermined:
+            print("📍 Requesting location authorization...")
+            locationManager.requestWhenInUseAuthorization()
+        case .authorizedWhenInUse, .authorizedAlways:
+            beginLocationUpdates()
+        case .denied, .restricted:
+            print("📍 Location access denied - using default NYC location")
+            setDefaultLocation()
+        @unknown default:
+            print("📍 Unknown authorization status")
+            locationManager.requestWhenInUseAuthorization()
+        }
+        
+        // Set up periodic location refresh (every 60 seconds) - less aggressive
+        locationUpdateTimer?.invalidate()
+        locationUpdateTimer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+            self?.refreshLocation()
+        }
+    }
+    
+    func stopLocationTracking() {
+        print("📍 Stopping location tracking...")
+        isTrackingLocation = false
+        locationManager.stopUpdatingLocation()
+        locationUpdateTimer?.invalidate()
+        locationUpdateTimer = nil
+    }
+    
+    private func beginLocationUpdates() {
+        print("📍 Beginning continuous location updates...")
+        locationManager.startUpdatingLocation()
+        
+        // Also do a one-time location request for immediate results
+        locationManager.requestLocation()
+    }
+    
+    private func refreshLocation() {
+        guard isTrackingLocation else { return }
+        
+        switch authorizationStatus {
+        case .authorizedWhenInUse, .authorizedAlways:
+            print("📍 Refreshing location...")
+            locationManager.requestLocation()
+        default:
+            break
+        }
+    }
+    
+    private func setDefaultLocation() {
+        // Default to NYC coordinates
+        location = CLLocation(latitude: 40.7589, longitude: -73.9851)
+        print("📍 Set default location: NYC")
+    }
+    
+    // MARK: - CLLocationManagerDelegate
+    
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let newLocation = locations.last else { return }
+        
+        // Only update if the new location is significantly different or more recent
+        if let currentLocation = location {
+            let distance = newLocation.distance(from: currentLocation)
+            let timeInterval = newLocation.timestamp.timeIntervalSince(currentLocation.timestamp)
+            
+            // Update if moved more than 100 meters or if it's been more than 60 seconds - less aggressive
+            if distance > 100 || timeInterval > 60 {
+                location = newLocation
+                print("📍 Location updated: \(newLocation.coordinate.latitude), \(newLocation.coordinate.longitude)")
+            }
+        } else {
+            location = newLocation
+            print("📍 Initial location set: \(newLocation.coordinate.latitude), \(newLocation.coordinate.longitude)")
+        }
+    }
+    
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        print("❌ Location error: \(error.localizedDescription)")
+        
+        // If we don't have a location yet, set default
+        if location == nil {
+            setDefaultLocation()
+        }
+    }
+    
+    func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
+        print("📍 Authorization status changed to: \(status.rawValue)")
+        authorizationStatus = status
+        
+        switch status {
+        case .authorizedWhenInUse, .authorizedAlways:
+            beginLocationUpdates()
+        case .denied, .restricted:
+            setDefaultLocation()
+        case .notDetermined:
+            // Will be handled by the next authorization request
+            break
+        @unknown default:
+            print("📍 Unknown authorization status")
+        }
+    }
+}
+
+// MARK: - Thrift Store Annotation
+class ThriftStoreAnnotation: NSObject, MKAnnotation {
+    let coordinate: CLLocationCoordinate2D
+    let title: String?
+    let subtitle: String?
+    let thriftStore: ThriftStore
+    
+    init(thriftStore: ThriftStore) {
+        self.thriftStore = thriftStore
+        self.coordinate = CLLocationCoordinate2D(latitude: thriftStore.latitude, longitude: thriftStore.longitude)
+        self.title = thriftStore.title
+        
+        var subtitleText = thriftStore.address
+        if let rating = thriftStore.rating {
+            subtitleText += " • ⭐ \(String(format: "%.1f", rating))"
+        }
+        if let reviews = thriftStore.reviews {
+            subtitleText += " (\(reviews) reviews)"
+        }
+        self.subtitle = subtitleText
+        
+        super.init()
+    }
+}
+
+// MARK: - Custom Apple-Style Annotation View
+class ThriftStoreAnnotationView: MKAnnotationView {
+    
+    private var nameLabel: UILabel!
+    
+    override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        setupView()
+    }
+    
+    required init?(coder aDecoder: NSCoder) {
+        super.init(coder: aDecoder)
+        setupView()
+    }
+    
+    private func setupView() {
+        canShowCallout = false
+        isUserInteractionEnabled = true
+        
+        // Create the main container
+        let containerView = UIView()
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        containerView.isUserInteractionEnabled = true
+        
+        // Create store name label (lowercase, smaller, with ellipsis)
+        nameLabel = UILabel()
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+        nameLabel.textAlignment = .center
+        nameLabel.numberOfLines = 1
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.font = UIFont.systemFont(ofSize: 12, weight: .medium)
+        nameLabel.textColor = .black
+        nameLabel.backgroundColor = .white
+        nameLabel.layer.cornerRadius = 16  // Larger radius for new size
+        nameLabel.layer.masksToBounds = false  // Allow shadow
+        nameLabel.layer.borderWidth = 0.5
+        nameLabel.layer.borderColor = UIColor.systemBlue.withAlphaComponent(0.3).cgColor  // Subtle blue hint
+        
+        // Add shadow using a separate shadow layer to avoid masksToBounds conflict
+        nameLabel.layer.shadowColor = UIColor.black.cgColor
+        nameLabel.layer.shadowOffset = CGSize(width: 0, height: 2)
+        nameLabel.layer.shadowOpacity = 0.15
+        nameLabel.layer.shadowRadius = 4
+        nameLabel.layer.shadowPath = UIBezierPath(roundedRect: CGRect(x: 0, y: 0, width: 130, height: 32), cornerRadius: 16).cgPath
+        nameLabel.isUserInteractionEnabled = false // Let map handle the touches
+        
+        // Create link emoji pin
+        let pinView = UILabel()
+        pinView.translatesAutoresizingMaskIntoConstraints = false
+        pinView.text = "🔗"
+        pinView.font = UIFont.systemFont(ofSize: 24)
+        pinView.textAlignment = .center
+        pinView.isUserInteractionEnabled = false  // Don't block map interactions
+        
+        // Add subviews
+        containerView.addSubview(nameLabel)
+        containerView.addSubview(pinView)
+        addSubview(containerView)
+        
+        // Set up constraints
+        NSLayoutConstraint.activate([
+            // Container
+            containerView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            containerView.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -20),
+            
+            // Name label - increased touch area
+            nameLabel.topAnchor.constraint(equalTo: containerView.topAnchor),
+            nameLabel.centerXAnchor.constraint(equalTo: containerView.centerXAnchor),
+            nameLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 130), // Wider
+            nameLabel.heightAnchor.constraint(equalToConstant: 32), // Taller for better touch
+            
+            // Pin (link emoji) - larger touch target
+            pinView.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 4),
+            pinView.centerXAnchor.constraint(equalTo: containerView.centerXAnchor),
+            pinView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+            pinView.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            pinView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
+        ])
+    }
+    
+
+    
+    // Remove aggressive touch handling to allow map interactions
+    
+    func showCopyFeedback() {
+        // Add visual feedback for tap
+        UIView.animate(withDuration: 0.1, animations: {
+            self.nameLabel.transform = CGAffineTransform(scaleX: 0.95, y: 0.95)
+            self.nameLabel.alpha = 0.8
+            self.nameLabel.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.1)
+        }) { _ in
+            UIView.animate(withDuration: 0.1) {
+                self.nameLabel.transform = CGAffineTransform.identity
+                self.nameLabel.alpha = 1.0
+                self.nameLabel.backgroundColor = .white
+            }
+        }
+    }
+    
+
+    
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        updateContent()
+    }
+    
+    override var annotation: MKAnnotation? {
+        didSet {
+            updateContent()
+        }
+    }
+    
+    private func updateContent() {
+        guard let annotation = annotation as? ThriftStoreAnnotation else { return }
+        nameLabel.text = "  \(annotation.thriftStore.title.lowercased())  "
+    }
+}
+
+// MARK: - Map View Controller (Updated for Google Maps)
+class MapViewController: ObservableObject {
+    private var mapView: GMSMapView?
+    
+    func setMapView(_ mapView: GMSMapView) {
+        self.mapView = mapView
+    }
+    
+    func zoomIn() {
+        guard let mapView = mapView else { return }
+        let currentZoom = mapView.camera.zoom
+        let newZoom = min(currentZoom + 1, 20) // Max zoom level 20
+        
+        let camera = GMSCameraUpdate.zoom(to: newZoom)
+        mapView.animate(with: camera)
+    }
+    
+    func zoomOut() {
+        guard let mapView = mapView else { return }
+        let currentZoom = mapView.camera.zoom
+        let newZoom = max(currentZoom - 1, 1) // Min zoom level 1
+        
+        let camera = GMSCameraUpdate.zoom(to: newZoom)
+        mapView.animate(with: camera)
+    }
+}
+
+// MARK: - Legacy Apple Maps View (DEPRECATED - Use GoogleMapsView instead)
+/*
+struct ThriftStoreMapView: UIViewRepresentable {
+    @StateObject private var mapService = ThriftStoreMapService()
+    @ObservedObject private var locationManager = LocationManager.shared // Use singleton
+    @ObservedObject var mapController: MapViewController
+    
+    func makeUIView(context: Context) -> MKMapView {
+        let mapView = MKMapView()
+        mapView.delegate = context.coordinator
+        mapView.showsUserLocation = true
+        mapView.userTrackingMode = .none
+        
+        // Ultra-minimal map appearance - no streets or labels
+        let config = MKStandardMapConfiguration()
+        config.emphasisStyle = .muted
+        config.pointOfInterestFilter = .excludingAll
+        mapView.preferredConfiguration = config
+        mapView.showsCompass = false
+        mapView.showsScale = false
+        mapView.showsTraffic = false
+        mapView.showsBuildings = false
+        mapView.showsPointsOfInterest = false
+        mapView.isPitchEnabled = false
+        mapView.isRotateEnabled = false
+        
+        // Hide all text labels on map
+        mapView.mapType = .mutedStandard
+        
+        // Set initial region based on current location or default to NYC
+        let initialLocation = locationManager.location?.coordinate ?? CLLocationCoordinate2D(latitude: 40.7589, longitude: -73.9851)
+        let defaultRegion = MKCoordinateRegion(
+            center: initialLocation,
+            span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+        )
+        mapView.setRegion(defaultRegion, animated: false)
+        
+        // Register custom annotation view
+        mapView.register(ThriftStoreAnnotationView.self, forAnnotationViewWithReuseIdentifier: "ThriftStorePin")
+        
+        // Set map reference in controller for zoom functionality
+        mapController.setMapView(mapView)
+        
+        print("🗺️ Map view initialized with location: \(initialLocation)")
+        
+        return mapView
+    }
+    
+    func updateUIView(_ mapView: MKMapView, context: Context) {
+        let coordinator = context.coordinator
+        
+        // Update annotations when thrift stores change (no state modification here)
+        let currentAnnotations = mapView.annotations.compactMap { $0 as? ThriftStoreAnnotation }
+        let newStores = mapService.thriftStores
+        
+        // Only update annotations if the stores have actually changed
+        if currentAnnotations.count != newStores.count || 
+           !currentAnnotations.allSatisfy({ annotation in
+               newStores.contains { $0.id == annotation.thriftStore.id }
+           }) {
+            
+            mapView.removeAnnotations(currentAnnotations)
+            let newAnnotations = newStores.map { ThriftStoreAnnotation(thriftStore: $0) }
+            mapView.addAnnotations(newAnnotations)
+            print("🗺️ Updated map with \(newAnnotations.count) store annotations")
+        }
+        
+        // Handle location updates (use coordinator state, not @State)
+        if let location = locationManager.location {
+            // Only update region if this is the first location or user has moved significantly
+            let shouldUpdateRegion = !coordinator.hasInitializedLocation || 
+                                   (coordinator.lastSearchLocation == nil || 
+                                    location.distance(from: coordinator.lastSearchLocation!) > 1000) // 1km threshold
+            
+            if shouldUpdateRegion {
+                let newRegion = MKCoordinateRegion(
+                    center: location.coordinate,
+                    span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+                )
+                mapView.setRegion(newRegion, animated: coordinator.hasInitializedLocation)
+                coordinator.hasInitializedLocation = true
+                print("🗺️ Updated map region to: \(location.coordinate)")
+            }
+            
+            // Search for thrift stores if location has changed significantly or no stores loaded
+            let shouldSearchStores = coordinator.lastSearchLocation == nil || 
+                                   location.distance(from: coordinator.lastSearchLocation!) > 2000 || // 2km threshold
+                                   (mapService.thriftStores.isEmpty && !mapService.isLoading)
+            
+            if shouldSearchStores {
+                coordinator.lastSearchLocation = location
+                Task {
+                    print("🗺️ Searching for stores near: \(location.coordinate)")
+                    await mapService.searchNearbyThriftStores(
+                        latitude: location.coordinate.latitude,
+                        longitude: location.coordinate.longitude
+                    )
+                }
+            }
+        }
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    // Use coordinator to track state instead of @State to avoid infinite loops
+    class Coordinator: NSObject, MKMapViewDelegate {
+        var parent: ThriftStoreMapView
+        var hasInitializedLocation = false
+        var lastSearchLocation: CLLocation?
+        
+        init(_ parent: ThriftStoreMapView) {
+            self.parent = parent
+            super.init()
+            
+            // Start location tracking immediately
+            parent.locationManager.startLocationTracking()
+        }
+        
+        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            // Don't customize user location annotation
+            if annotation is MKUserLocation {
+                return nil
+            }
+            
+            guard annotation is ThriftStoreAnnotation else {
+                return nil
+            }
+            
+            let identifier = "ThriftStorePin"
+            var annotationView = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) as? ThriftStoreAnnotationView
+            
+            if annotationView == nil {
+                annotationView = ThriftStoreAnnotationView(annotation: annotation, reuseIdentifier: identifier)
+            } else {
+                annotationView?.annotation = annotation
+            }
+            
+            return annotationView
+        }
+        
+        func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
+            print("🗺️ Map annotation selected")
+            
+            // Handle address copying when annotation is selected
+            guard let annotation = view.annotation as? ThriftStoreAnnotation else { 
+                return 
+            }
+            
+            let store = annotation.thriftStore
+            
+            // Ensure we have a valid address
+            guard !store.address.isEmpty else {
+                print("❌ Store address is empty")
+                return
+            }
+            
+            // Add haptic feedback
+            let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+            impactFeedback.impactOccurred()
+            
+            // Copy address to clipboard
+            UIPasteboard.general.string = store.address
+            print("✅ Address copied to clipboard: \(store.address)")
+            
+            // Add visual feedback to the annotation view
+            if let annotationView = view as? ThriftStoreAnnotationView {
+                annotationView.showCopyFeedback()
+            }
+            
+            // Show feedback that address was copied
+            let alert = UIAlertController(
+                title: "✨ Address Copied!",
+                message: "\n\(store.title)\n\(store.address)",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "Got it!", style: .default))
+            
+            // Find the top view controller to present the alert
+            DispatchQueue.main.async {
+                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                   let window = windowScene.windows.first,
+                   let rootViewController = window.rootViewController {
+                    
+                    var topController = rootViewController
+                    while let presented = topController.presentedViewController {
+                        topController = presented
+                    }
+                    
+                    topController.present(alert, animated: true)
+                } else {
+                    print("❌ Could not find view controller to present alert")
+                }
+            }
+            
+            // Deselect the annotation to allow multiple taps
+            mapView.deselectAnnotation(annotation, animated: false)
+        }
+        
+        func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            // Optionally search for new stores when user pans the map significantly
+            let currentCenter = mapView.region.center
+            
+            if let lastSearchLocation = self.lastSearchLocation {
+                let distance = CLLocation(latitude: currentCenter.latitude, longitude: currentCenter.longitude)
+                    .distance(from: lastSearchLocation)
+                
+                // If user has panned more than 5km, search for new stores
+                if distance > 5000 {
+                    self.lastSearchLocation = CLLocation(latitude: currentCenter.latitude, longitude: currentCenter.longitude)
+                    Task {
+                        print("🗺️ Map panned significantly, searching for new stores")
+                        await parent.mapService.searchNearbyThriftStores(
+                            latitude: currentCenter.latitude,
+                            longitude: currentCenter.longitude
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+*/
+
+
 
 // MARK: - Clothing Details Models
 struct ClothingDetails: Codable, Equatable {
@@ -368,11 +1646,13 @@ struct ClothingDetails: Codable, Equatable {
     let era: String?
     let colors: [String]?
     let fabricComposition: [FabricComponent]?
+    let isAuthentic: Bool?
     
     enum CodingKeys: String, CodingKey {
         case category, style, season, gender, era, colors
         case designerTier = "designer_tier"
         case fabricComposition = "fabric_composition"
+        case isAuthentic = "is_authentic"
     }
 }
 
@@ -512,7 +1792,7 @@ struct GetStartedButton: View {
 
 // Song Data Model with Codable support for persistence
 struct Song: Identifiable, Codable, Equatable {
-    let id = UUID()
+    let id: UUID
     var title: String
     var lyrics: String
     var imageName: String
@@ -521,6 +1801,19 @@ struct Song: Identifiable, Codable, Equatable {
     var useWaveformDesign: Bool = false
     var lastEdited: Date
     var associatedInstrumental: String? // Track which instrumental is loaded with this song
+    
+    // Custom initializer to ensure UUID is created only once
+    init(title: String, lyrics: String, imageName: String, customImageData: Data? = nil, additionalImagesData: [Data]? = nil, useWaveformDesign: Bool = false, lastEdited: Date = Date(), associatedInstrumental: String? = nil, id: UUID = UUID()) {
+        self.id = id
+        self.title = title
+        self.lyrics = lyrics
+        self.imageName = imageName
+        self.customImageData = customImageData
+        self.additionalImagesData = additionalImagesData
+        self.useWaveformDesign = useWaveformDesign
+        self.lastEdited = lastEdited
+        self.associatedInstrumental = associatedInstrumental
+    }
     
     var displayDate: String {
         let formatter = DateFormatter()
@@ -550,15 +1843,24 @@ struct Song: Identifiable, Codable, Equatable {
         }
     }
     
-    // All images combined (main + additional)
+    // All images combined (main + additional + asset images)
     var allImages: [UIImage] {
         var images: [UIImage] = []
+        
+        // Add custom image if available
         if let mainImage = customImage {
             images.append(mainImage)
         }
+        // Add asset image if available and no custom image
+        else if !imageName.isEmpty, let assetImage = UIImage(named: imageName) {
+            images.append(assetImage)
+        }
+        
+        // Add additional images
         if let additionalImages = additionalImages {
             images.append(contentsOf: additionalImages)
         }
+        
         return images
     }
     
@@ -575,9 +1877,13 @@ class SongManager: ObservableObject {
     
     private let userDefaultsKey = "SavedSongs"
     private let imageIndexKey = "CurrentImageIndex"
+    private let migrationKey = "RealThriftDataMigrationCompleted"
     
     // Available images for new songs (includes new + default images)
     private let availableImages = [
+        "travis",      // New artist image
+        "ecko",        // New artist image
+        "coach",       // New artist image
         "mansion",     // New image
         "skyline",     // New image  
         "couple",      // New image
@@ -607,6 +1913,15 @@ class SongManager: ObservableObject {
             songs.insert(song, at: 0)
             saveSongs()
             print("📝 Moved song '\(song.title)' to front of recently added list")
+        }
+    }
+    
+    // Update song properties without changing its position in the list
+    func updateSongInPlace(_ song: Song) {
+        if let index = songs.firstIndex(where: { $0.id == song.id }) {
+            songs[index] = song
+            saveSongs()
+            print("📝 Updated song '\(song.title)' without moving position")
         }
     }
     
@@ -673,6 +1988,18 @@ class SongManager: ObservableObject {
         saveSongs()
     }
     
+    func removeSong(_ song: Song) {
+        songs.removeAll { $0.id == song.id }
+        saveSongs()
+        print("🗑️ Removed song '\(song.title)' from song manager")
+        
+        // Also remove associated profit data from UserDefaults
+        UserDefaults.standard.removeObject(forKey: "avgPrice_\(song.id)")
+        UserDefaults.standard.removeObject(forKey: "sellPrice_\(song.id)")
+        UserDefaults.standard.removeObject(forKey: "profitOverride_\(song.id)")
+        UserDefaults.standard.removeObject(forKey: "useCustomProfit_\(song.id)")
+    }
+    
     private func saveSongs() {
         if let encoded = try? JSONEncoder().encode(songs) {
             UserDefaults.standard.set(encoded, forKey: userDefaultsKey)
@@ -687,16 +2014,115 @@ class SongManager: ObservableObject {
            let decoded = try? JSONDecoder().decode([Song].self, from: data) {
             songs = decoded
             print("📱 Loaded \(songs.count) songs from UserDefaults")
+            
+            // Debug: Print song IDs to verify UUID persistence
+            for song in songs {
+                print("🔍 Loaded song: '\(song.title)' with ID: \(song.id.uuidString)")
+            }
+            
+            // Migrate sample songs to use new artist images
+            migrateSampleSongsToNewImages()
         } else {
             // First time - create default sample songs
+            let calendar = Calendar.current
+            let now = Date()
+            
             songs = [
-                Song(title: "My Turn (Sample Song)", lyrics: "", imageName: "lambo", lastEdited: Date()),
-                Song(title: "IDGAF (Sample Song)", lyrics: "", imageName: "boy", lastEdited: Date()),
-                Song(title: "Deep Thoughts (Sample Song)", lyrics: "", imageName: "girl", lastEdited: Date())
+                Song(
+                    title: "Nike Air Jordan 1's - T-Scott", 
+                    lyrics: "🔥 FIND: Authentic 80s leather jacket\n💰 PRICE: $45 (Retail: $300+)\n📍 SOURCE: Local thrift store\n⭐ CONDITION: Excellent, minimal wear\n\n📝 NOTES:\n• Genuine leather, buttery soft\n• Classic moto style with zippers\n• Perfect for fall/winter\n• Checked comps - selling for $150+ online\n• Could flip for 3x profit easily\n\n🎯 WHY I BOUGHT IT:\nTimeless piece, great ROI potential, fits current trends", 
+                    imageName: "travis", 
+                    lastEdited: calendar.date(byAdding: .day, value: -3, to: now) ?? now
+                ),
+                Song(
+                    title: "Vintage Ecko Navy Blue Hoodie", 
+                    lyrics: "🔥 FIND: Jordan 4 White Cement (2016)\n💰 PRICE: $65 (Retail: $190, Resale: $180-250)\n📍 SOURCE: Goodwill\n⭐ CONDITION: 8/10, light creasing\n\n📝 NOTES:\n• Size 10.5 - popular size\n• OG all with box (missing lid)\n• Slight yellowing on midsole (normal)\n• No major flaws or scuffs\n• StockX verified authentic look-alikes\n\n🎯 WHY I BOUGHT IT:\nInstant profit, always in demand, classic colorway", 
+                    imageName: "ecko", 
+                    lastEdited: calendar.date(byAdding: .day, value: -7, to: now) ?? now
+                ),
+                Song(
+                    title: "Coach Vintage Handbag", 
+                    lyrics: "🔥 FIND: Coach Legacy Shoulder Bag\n💰 PRICE: $12 (Retail: $298)\n📍 SOURCE: Estate sale\n⭐ CONDITION: 9/10, barely used\n\n📝 NOTES:\n• Authentic serial number verified\n• Black pebbled leather\n• Silver hardware, no tarnishing\n• Interior pristine, no stains\n• Dust bag included\n• Model 9966 - discontinued style\n\n🎯 WHY I BOUGHT IT:\nAuthentic Coach under $15 is always a buy. These sell for $80-120 online.", 
+                    imageName: "coach", 
+                    lastEdited: calendar.date(byAdding: .day, value: -12, to: now) ?? now
+                )
             ]
             saveSongs() // Save the initial songs
             print("🎵 Created initial sample songs")
         }
+    }
+    
+    // Migrate existing sample songs to use new artist images
+    private func migrateSampleSongsToNewImages() {
+        // Check if migration has already been completed
+        if UserDefaults.standard.bool(forKey: migrationKey) {
+            return
+        }
+        
+        let imageMapping = [
+            "lambo": "travis",
+            "boy": "ecko", 
+            "girl": "coach"
+        ]
+        
+        // Also handle title mapping for old sample songs
+        let titleMapping = [
+            "My Turn (Sample Song)": "Nike Air Jordan 1's - T-Scott",
+            "IDGAF (Sample Song)": "Vintage Ecko Navy Blue Hoodie",
+            "Deep Thoughts (Sample Song)": "Coach Vintage Handbag"
+        ]
+        
+        var updated = false
+        
+        for i in 0..<songs.count {
+            let currentSong = songs[i]
+            
+            // Check if this is an old sample song that needs migration
+            if currentSong.title.contains("(Sample Song)") || 
+               imageMapping.keys.contains(currentSong.imageName) {
+                
+                // Update image if needed
+                if let newImageName = imageMapping[currentSong.imageName] {
+                    songs[i].imageName = newImageName
+                    updated = true
+                }
+                
+                // Update title and content if it's an old sample song
+                if let newTitle = titleMapping[currentSong.title] {
+                    songs[i].title = newTitle
+                    
+                    // Set realistic dates for migrated songs
+                    let calendar = Calendar.current
+                    let now = Date()
+                    
+                    // Add realistic content and dates based on the new title
+                    switch newTitle {
+                    case "Nike Air Jordan 1's - T-Scott":
+                        songs[i].lyrics = "🔥 FIND: Authentic 80s leather jacket\n💰 PRICE: $45 (Retail: $300+)\n📍 SOURCE: Local thrift store\n⭐ CONDITION: Excellent, minimal wear\n\n📝 NOTES:\n• Genuine leather, buttery soft\n• Classic moto style with zippers\n• Perfect for fall/winter\n• Checked comps - selling for $150+ online\n• Could flip for 3x profit easily\n\n🎯 WHY I BOUGHT IT:\nTimeless piece, great ROI potential, fits current trends"
+                        songs[i].lastEdited = calendar.date(byAdding: .day, value: -3, to: now) ?? now
+                    case "Vintage Ecko Navy Blue Hoodie":
+                        songs[i].lyrics = "🔥 FIND: Jordan 4 White Cement (2016)\n💰 PRICE: $65 (Retail: $190, Resale: $180-250)\n📍 SOURCE: Goodwill\n⭐ CONDITION: 8/10, light creasing\n\n📝 NOTES:\n• Size 10.5 - popular size\n• OG all with box (missing lid)\n• Slight yellowing on midsole (normal)\n• No major flaws or scuffs\n• StockX verified authentic look-alikes\n\n🎯 WHY I BOUGHT IT:\nInstant profit, always in demand, classic colorway"
+                        songs[i].lastEdited = calendar.date(byAdding: .day, value: -7, to: now) ?? now
+                    case "Coach Vintage Handbag":
+                        songs[i].lyrics = "🔥 FIND: Coach Legacy Shoulder Bag\n💰 PRICE: $12 (Retail: $298)\n📍 SOURCE: Estate sale\n⭐ CONDITION: 9/10, barely used\n\n📝 NOTES:\n• Authentic serial number verified\n• Black pebbled leather\n• Silver hardware, no tarnishing\n• Interior pristine, no stains\n• Dust bag included\n• Model 9966 - discontinued style\n\n🎯 WHY I BOUGHT IT:\nAuthentic Coach under $15 is always a buy. These sell for $80-120 online."
+                        songs[i].lastEdited = calendar.date(byAdding: .day, value: -12, to: now) ?? now
+                    default:
+                        break
+                    }
+                    updated = true
+                }
+                
+                print("🔄 Migrated sample: '\(currentSong.title)' to '\(songs[i].title)' with image '\(songs[i].imageName)'")
+            }
+        }
+        
+        if updated {
+            saveSongs()
+            print("✅ Sample songs migration completed with real thrift data")
+        }
+        
+        // Mark migration as completed
+        UserDefaults.standard.set(true, forKey: migrationKey)
     }
 }
 
@@ -707,8 +2133,14 @@ class StoreManager: ObservableObject {
     @Published var isSubscribed = false
     
     private let productIds = [
-        "com.thrifty.thrifty.unlimited.yearly",        // $29.99 regular subscription
-        "com.thrifty.thrifty.unlimited.yearly.special" // $19.99 special offer
+        "com.thrifty.thrifty.unlimited.yearly79",         // $79.00 yearly subscription (NEW)
+        "com.thrifty.thrifty.unlimited.yearly.winback39" // $39.00 winback offer (NEW)
+    ]
+    
+    // Fallback product IDs (temporarily for testing while new products are pending approval)
+    private let fallbackProductIds = [
+        "com.thrifty.thrifty.unlimited.yearly",         // Old yearly subscription
+        "com.thrifty.thrifty.unlimited.monthly.winback" // Old winback offer
     ]
     
     init() {
@@ -725,15 +2157,57 @@ class StoreManager: ObservableObject {
             for product in subscriptions {
                 print("   - \(product.id): \(product.displayPrice)")
             }
+            
+            // Check if we got the expected number of products
+            if subscriptions.count < productIds.count {
+                print("⚠️ Missing products detected!")
+                let loadedIds = subscriptions.map { $0.id }
+                for productId in productIds {
+                    if !loadedIds.contains(productId) {
+                        print("❌ Missing product: \(productId)")
+                    }
+                }
+                print("💡 Trying fallback product IDs for testing...")
+                
+                // Try fallback products since new ones aren't available
+                do {
+                    let fallbackProducts = try await Product.products(for: fallbackProductIds)
+                    print("✅ Fallback products loaded successfully: \(fallbackProducts.count) products")
+                    for product in fallbackProducts {
+                        print("   - \(product.id): \(product.displayPrice)")
+                    }
+                    // Use fallback products if we got more products than with new IDs
+                    if fallbackProducts.count > subscriptions.count {
+                        subscriptions = fallbackProducts
+                        print("⚠️ Using old product IDs temporarily until new ones are approved")
+                    }
+                } catch {
+                    print("❌ Fallback products also failed:", error)
+                }
+            }
+            
         } catch {
             print("❌ Failed to load products:", error)
-            // Retry once after a short delay
-            try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+            print("🔍 Attempting to load products with these IDs:")
+            for productId in productIds {
+                print("   - \(productId)")
+            }
+            
+            // Try fallback products immediately if main load failed
+            print("💡 Trying fallback product IDs...")
             do {
-                subscriptions = try await Product.products(for: productIds)
-                print("✅ Retry successful - loaded \(subscriptions.count) products")
+                subscriptions = try await Product.products(for: fallbackProductIds)
+                print("✅ Fallback products loaded successfully: \(subscriptions.count) products")
+                for product in subscriptions {
+                    print("   - \(product.id): \(product.displayPrice)")
+                }
+                print("⚠️ Using old product IDs temporarily until new ones are approved")
             } catch {
-                print("❌ Retry also failed:", error)
+                print("❌ Even fallback products failed:", error)
+                print("💡 This usually means:")
+                print("   1. Products are not yet approved in App Store Connect")
+                print("   2. Products are not available in this region")
+                print("   3. There's a configuration issue")
             }
         }
     }
@@ -844,6 +2318,7 @@ struct SignInView: View {
 // Terms and Privacy Text Component - Separated to avoid compilation issues
 struct TermsAndPrivacyText: View {
     @Binding var showingPrivacyPolicy: Bool
+    @State private var showingTermsOfService = false
     
     var body: some View {
         VStack(spacing: 0) {
@@ -864,10 +2339,8 @@ struct TermsAndPrivacyText: View {
                     .foregroundColor(.black)
                     .underline(color: .black)
                     .onTapGesture {
-                        print("✅ Opening Apple Terms of Service")
-                        if let url = URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/") {
-                            UIApplication.shared.open(url)
-                        }
+                        print("✅ Opening Thrifty Terms of Service")
+                        showingTermsOfService = true
                     }
                 
                 Text(" and ")
@@ -883,6 +2356,11 @@ struct TermsAndPrivacyText: View {
                         showingPrivacyPolicy = true
                     }
             }
+        }
+        .sheet(isPresented: $showingTermsOfService) {
+            TermsOfServiceView()
+                .presentationDetents([.height(UIScreen.main.bounds.height * 0.8)])
+                .presentationDragIndicator(.visible)
         }
     }
 
@@ -968,11 +2446,11 @@ struct TermsOfServiceView: View {
                 .foregroundColor(.black)
             
             VStack(alignment: .leading, spacing: 8) {
-                Text("• AI-powered lyric generation tools")
-                Text("• Rhyme and wordplay assistance")
-                Text("• Song structure and composition guidance")
-                Text("• Creative writing enhancement features")
-                Text("• Instrumental library access")
+                Text("• AI-powered item identification and analysis")
+                Text("• Price estimation and market value assessment")
+                Text("• Brand and product recognition technology")
+                Text("• Unlimited item scanning capabilities")
+                Text("• Thrift store item evaluation tools")
             }
             .font(.system(size: 16))
             .foregroundColor(.black)
@@ -1013,7 +2491,7 @@ struct TermsOfServiceView: View {
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundColor(.black)
             
-            Text("You retain ownership of lyrics and creative content you create using our Service. However, you grant us a limited license to process and analyze your content to provide and improve our services.")
+            Text("You retain ownership of any images and content you upload to our Service. However, you grant us a limited license to process and analyze your content to provide item identification, pricing analysis, and improve our services.")
                 .font(.system(size: 16))
                 .foregroundColor(.black)
             
@@ -1035,7 +2513,7 @@ struct TermsOfServiceView: View {
                 .foregroundColor(.black)
                 .padding(.top, 10)
             
-            Text("Our Service is provided \"as is\" without warranties of any kind. We strive to provide accurate and helpful AI-generated content, but cannot guarantee the quality, originality, or commercial viability of generated lyrics.")
+            Text("Our Service is provided \"as is\" without warranties of any kind. We strive to provide accurate and helpful AI-generated item analysis, but cannot guarantee the absolute accuracy of price estimates, brand identification, or market value assessments.")
                 .font(.system(size: 16))
                 .foregroundColor(.black)
             
@@ -1061,7 +2539,7 @@ struct TermsOfServiceView: View {
                 .font(.system(size: 16))
                 .foregroundColor(.black)
             
-            Text("📧 By email: support@thrifty.ai")
+            Text("📧 By email: helpthrifty@gmail.com")
                 .font(.system(size: 16, weight: .medium))
                 .foregroundColor(.blue)
         }
@@ -1407,7 +2885,7 @@ struct PrivacyPolicyView: View {
                 .font(.system(size: 16))
                 .foregroundColor(.black)
             
-            Text("📧 By email: support@thrifty.ai")
+            Text("📧 By email: helpthrifty@gmail.com")
                 .font(.system(size: 16, weight: .medium))
                 .foregroundColor(.blue)
         }
@@ -1471,7 +2949,9 @@ struct InstrumentalCard: View {
                     .aspectRatio(contentMode: .fill)
                     .frame(width: 180, height: 180) // Made image even larger
                     .clipped()
-                    .cornerRadius(12)
+                    .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
             }
             
             // Compact Audio Player below the image
@@ -2245,6 +3725,8 @@ struct ConfettiView: View {
 
 struct RatingView: View {
     @Environment(\.dismiss) var dismiss
+    @StateObject private var coordinator = OnboardingCoordinator()
+    @StateObject private var remoteConfig = RemoteConfigManager.shared
     @State private var selectedRating: Int = 5 // Default to 5 stars selected
     @State private var navigateToNext = false
     @State private var showingRatingPopup = false
@@ -2253,8 +3735,12 @@ struct RatingView: View {
     
     var body: some View {
         GeometryReader { geometry in
-            VStack(spacing: 0) {
-                // Header with back button and progress
+            ZStack(alignment: .bottom) {
+                // Scrollable content
+                ScrollView {
+                    VStack(spacing: 0) {
+                        // Ensure proper spacing for all device sizes, especially iPad
+                        // Header with back button and progress
                 HStack(spacing: 16) {
                     Button(action: { dismiss() }) {
                         Circle()
@@ -2287,6 +3773,8 @@ struct RatingView: View {
                         ForEach(1...5, id: \.self) { index in
                             Button(action: {
                                 selectedRating = index
+                                // Track question-specific answer
+                                coordinator.trackQuestionAnswered(answer: "\(index) stars")
                             }) {
                                 Image(systemName: "star.fill")
                                     .font(.system(size: 24)) // Reduced from 28
@@ -2388,7 +3876,7 @@ struct RatingView: View {
                                 }
                             }
                             
-                            Text("\"I finally finished the songs that had been sitting in my notebook for months! Thought I'd never see the light of day lol\"")
+                            Text("\"I flip vintage clothes online, and this tool helps me spot undervalued gems faster. It's like having a pro thrifter in my pocket!\"")
                                 .font(.system(size: 13)) // Reduced from 14
                                 .foregroundColor(.white.opacity(0.95))
                                 .lineLimit(nil)
@@ -2432,7 +3920,7 @@ struct RatingView: View {
                                 }
                             }
                             
-                            Text("\"The creativity this tool unlocks is incredible! The lyrics it generates feel natural, meaningful, and NOT cheesy like some other tools. It's made my songwriting process exciting again.\"")
+                            Text("\"I used to get overwhelmed in big thrift stores. Now I know exactly what to look for—and what to skip. It makes thrifting fun again!\"")
                                 .font(.system(size: 13)) // Reduced from 14
                                 .foregroundColor(.white.opacity(0.95))
                                 .lineLimit(nil)
@@ -2451,42 +3939,59 @@ struct RatingView: View {
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 24) // Reduced from 32
-                .padding(.bottom, 24) // Reduced from 32
-                
-                Spacer()
-                
-                // Next button
-                Button(action: {
-                    navigateToNext = true
-                }) {
-                    Text("Next")
-                        .font(.system(size: 17, weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 52)
-                        .background(
-                            RoundedRectangle(cornerRadius: 26)
-                                .fill(ratingCompleted ? Color.black : Color.gray)
-                                .shadow(color: Color.black.opacity(0.2), radius: 6, x: 0, y: 3)
-                        )
-                        .foregroundColor(.white)
-                }
-                .disabled(!ratingCompleted)
-                .padding(.horizontal, 24)
-                .padding(.bottom, geometry.safeAreaInsets.bottom > 0 ? geometry.safeAreaInsets.bottom + 8 : 24)
-                .onChange(of: showingRatingPopup) { newValue in
-                    if newValue && !popupShown {
-                        popupShown = true
-                        // Request review when showingRatingPopup becomes true
-                        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-                            SKStoreReviewController.requestReview(in: scene)
-                        }
-                        // Set a timer to detect when the popup is dismissed
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                            showingRatingPopup = false
-                            ratingCompleted = true
-                        }
+                .padding(.bottom, 80) // Reduced bottom padding for floating button
                     }
                 }
+                
+                // Floating Next button overlay
+                VStack(spacing: 20) {
+                    // Next button - Floating over scrollable content
+                    Button(action: {
+                        navigateToNext = true
+                    }) {
+                        Text("Next")
+                            .font(.system(size: 17, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 52)
+                            .background(
+                                RoundedRectangle(cornerRadius: 26)
+                                    .fill(selectedRating > 0 ? Color.black : Color.gray)
+                                    .shadow(color: Color.black.opacity(0.2), radius: 6, x: 0, y: 3)
+                            )
+                            .foregroundColor(.white)
+                    }
+                    .disabled(selectedRating == 0)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 20) // Add equal top padding to match the spacing
+                    .padding(.bottom, max(geometry.safeAreaInsets.bottom + 16, 40)) // Ensure minimum 40pt bottom padding for iPad
+                    .onChange(of: showingRatingPopup) { newValue in
+                        if newValue && !popupShown {
+                            popupShown = true
+                            // Request review when showingRatingPopup becomes true
+                            if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                                SKStoreReviewController.requestReview(in: scene)
+                            }
+                            // Set a timer to detect when the popup is dismissed
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                showingRatingPopup = false
+                                ratingCompleted = true
+                            }
+                        }
+                    }
+                    
+                    // Force button visibility - safety measure for iPad
+                    if selectedRating == 0 {
+                        Text("Please select a rating to continue")
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                            .padding(.bottom, 8)
+                    }
+                }
+                .background(
+                    Rectangle()
+                        .fill(.ultraThinMaterial)
+                        .ignoresSafeArea()
+                )
                 
                 // Hidden NavigationLink for programmatic navigation
                 NavigationLink(isActive: $navigateToNext) {
@@ -2495,13 +4000,25 @@ struct RatingView: View {
                     EmptyView()
                 }
             }
+            // Add bottom background to ensure button area is visible on iPad
+            .background(Color.white, alignment: .bottom)
             .background(Color.white)
             .navigationBarHidden(true)
             .preferredColorScheme(.light)
+            .ignoresSafeArea(.keyboard, edges: .bottom) // Ensure content isn't cut off by keyboard
             .onAppear {
-                // Show rating popup automatically when view appears
+                coordinator.currentStep = 15
+                MixpanelService.shared.trackQuestionViewed(questionTitle: "Give us rating", stepNumber: 15)
+                // FacebookPixelService.shared.trackOnboardingStepViewed(questionTitle: "Give us rating", stepNumber: 15)
+                
+                // Ensure button is always visible by default
+                ratingCompleted = true
+                
+                // Show rating popup automatically when view appears - only when hardPaywall is true
+                if remoteConfig.hardPaywall {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                     showingRatingPopup = true
+                    }
                 }
             }
         }
@@ -2512,15 +4029,10 @@ struct RatingView: View {
 struct CompletionView: View {
     @Environment(\.dismiss) var dismiss
     @StateObject private var coordinator = OnboardingCoordinator()
+    @StateObject private var remoteConfig = RemoteConfigManager.shared
     @State private var showContent = false
     @State private var showConfetti = false
     @State private var navigateToRating = false
-    
-    init() {
-        // Set the current step for this view
-        let coordinator = OnboardingCoordinator()
-        coordinator.currentStep = 14
-    }
     
     var body: some View {
         ZStack {
@@ -2601,7 +4113,9 @@ struct CompletionView: View {
                 
                 Spacer()
                 
-                // Update Let's do this button to navigate to RatingView
+                // Update Let's do this button to navigate to RatingView (disabled when hardPaywall is false)
+                Group {
+                    if remoteConfig.hardPaywall {
                 NavigationLink(isActive: $navigateToRating) {
                     RatingView()
                 } label: {
@@ -2617,15 +4131,36 @@ struct CompletionView: View {
                     coordinator.nextStep()
                     navigateToRating = true
                 })
-                .opacity(showContent ? 1 : 0)
-                .animation(.easeOut(duration: 0.6).delay(1.2), value: showContent)
+                    } else {
+                        // Skip rating when hardPaywall is false - go directly to next step
+                        NavigationLink(isActive: $navigateToRating) {
+                            CustomPlanView()
+                        } label: {
+                            Text("Let's do this")
+                                .font(.system(size: 17, weight: .semibold))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 56)
+                                .background(Color.black)
+                                .foregroundColor(.white)
+                                .cornerRadius(28)
+                        }
+                        .simultaneousGesture(TapGesture().onEnded {
+                            coordinator.nextStep()
+                            navigateToRating = true
+                        })
+                    }
+                }
                 .padding(.horizontal, 24)
                 .padding(.bottom, 40)
+                .opacity(showContent ? 1 : 0)
+                .animation(.easeOut(duration: 0.6).delay(1.2), value: showContent)
             }
         }
         .navigationBarHidden(true)
         .preferredColorScheme(.light)
         .onAppear {
+            coordinator.currentStep = 14
+            MixpanelService.shared.trackQuestionViewed(questionTitle: "Thank you for trusting us", stepNumber: 14)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 showContent = true
                 showConfetti = true
@@ -2641,12 +4176,6 @@ struct ProgressGraphView: View {
     @State private var showGraph = false
     @State private var showTrophy = false
     @State private var navigateToNext = false
-    
-    init() {
-        // Set the current step for this view
-        let coordinator = OnboardingCoordinator()
-        coordinator.currentStep = 13
-    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -2687,7 +4216,7 @@ struct ProgressGraphView: View {
             // Graph container
             VStack(spacing: 16) {
                 // Graph title
-                Text("Your creativity transition")
+                Text("Your Money Savings")
                     .font(.system(size: 17))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 24)
@@ -2816,13 +4345,13 @@ struct ProgressGraphView: View {
                 
                 // Time labels
                 HStack {
+                    Text("1 Day")
+                        .font(.system(size: 15))
+                    Spacer()
                     Text("3 Days")
                         .font(.system(size: 15))
                     Spacer()
                     Text("7 Days")
-                        .font(.system(size: 15))
-                    Spacer()
-                    Text("30 Days")
                         .font(.system(size: 15))
                 }
                 .padding(.horizontal, 24)
@@ -2878,6 +4407,8 @@ struct ProgressGraphView: View {
         .navigationBarHidden(true)
         .preferredColorScheme(.light)
         .onAppear {
+            coordinator.currentStep = 13
+            MixpanelService.shared.trackQuestionViewed(questionTitle: "You have great potential to crush your goal", stepNumber: 13)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 showGraph = true
             }
@@ -2892,16 +4423,10 @@ struct UltimateGoalView: View {
     @State private var selectedGoal: String?
     @State private var navigateToNext = false
     
-    init() {
-        // Set the current step for this view
-        let coordinator = OnboardingCoordinator()
-        coordinator.currentStep = 12
-    }
-    
     let goals = [
-        "Building a loyal fanbase",
-        "Releasing chart-topping music",
-        "Financial independence through music"
+        "I want to save more money",
+        "I want to save more time",
+        "Just enjoying the thrill of the hunt"
     ]
     
     var body: some View {
@@ -2937,7 +4462,7 @@ struct UltimateGoalView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("What is your ultimate\ngoal?")
                     .font(.system(size: 32, weight: .bold))
-                Text("This will be used to calibrate your custom lyrics.")
+                Text("This will be used to calibrate your custom thrift profile.")
                     .font(.system(size: 17))
                     .foregroundColor(.gray)
             }
@@ -2948,14 +4473,20 @@ struct UltimateGoalView: View {
             // Goals list
             VStack(spacing: 16) {
                 ForEach(goals, id: \.self) { goal in
-                    Button(action: { selectedGoal = goal }) {
+                    Button(action: { 
+                        selectedGoal = goal
+                        // Track question-specific answer
+                        coordinator.trackQuestionAnswered(answer: goal)
+                    }) {
                         Text(goal)
                             .font(.system(size: 17))
                             .frame(maxWidth: .infinity)
                             .frame(height: 56)
                             .background(selectedGoal == goal ? Color.black : Color(.systemGray6))
                             .foregroundColor(selectedGoal == goal ? .white : .black)
-                            .cornerRadius(16)
+                            .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
                     }
                 }
             }
@@ -2989,6 +4520,9 @@ struct UltimateGoalView: View {
         .background(Color.white)
         .navigationBarHidden(true)
         .preferredColorScheme(.light)
+        .onAppear {
+            coordinator.currentStep = 12
+        }
     }
 }
 
@@ -2999,18 +4533,11 @@ struct ObstaclesView: View {
     @State private var selectedObstacle: String?
     @State private var navigateToNext = false
     
-    init() {
-        // Set the current step for this view
-        let coordinator = OnboardingCoordinator()
-        coordinator.currentStep = 11
-    }
-    
     let obstacles = [
-        ("Lack of consistency", "chart.bar"),
-        ("Writer's block", "brain"),
-        ("Lack of support", "hand.raised"),
-        ("Busy schedule", "calendar"),
-        ("Lack of inspiration", "lightbulb")
+        ("I go, but don't always score", "chart.bar"),
+        ("Don't know what to look for", "brain"),
+        ("Unsure what's actually valuable", "hand.raised"),
+        ("Other thrifters are too fast", "calendar"),
     ]
     
     var body: some View {
@@ -3052,7 +4579,11 @@ struct ObstaclesView: View {
             // Obstacles list
             VStack(spacing: 16) {
                 ForEach(obstacles, id: \.0) { obstacle, icon in
-                    Button(action: { selectedObstacle = obstacle }) {
+                    Button(action: { 
+                        selectedObstacle = obstacle
+                        // Track question-specific answer
+                        coordinator.trackQuestionAnswered(answer: obstacle)
+                    }) {
                         HStack {
                             Image(systemName: icon)
                                 .font(.system(size: 20))
@@ -3066,7 +4597,9 @@ struct ObstaclesView: View {
                         .frame(height: 56)
                         .background(selectedObstacle == obstacle ? Color.black : Color(.systemGray6))
                         .foregroundColor(selectedObstacle == obstacle ? .white : .black)
-                        .cornerRadius(16)
+                        .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
                     }
                 }
             }
@@ -3100,22 +4633,19 @@ struct ObstaclesView: View {
         .background(Color.white)
         .navigationBarHidden(true)
         .preferredColorScheme(.light)
+        .onAppear {
+            coordinator.currentStep = 11
+        }
     }
 }
 
-// Update CreativityComparisonView to navigate to ObstaclesView
-struct CreativityComparisonView: View {
+// Update ThriftingTransitionView to navigate to ObstaclesView
+struct ThriftingTransitionView: View {
     @Environment(\.dismiss) var dismiss
     @StateObject private var coordinator = OnboardingCoordinator()
     @State private var navigateToNext = false
     @State private var showChart = false
     @State private var animationComplete = false
-    
-    init() {
-        // Set the current step for this view
-        let coordinator = OnboardingCoordinator()
-        coordinator.currentStep = 10
-    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -3168,11 +4698,11 @@ struct CreativityComparisonView: View {
                         ZStack(alignment: .bottom) {
                             RoundedRectangle(cornerRadius: 12)
                                 .fill(Color.white.opacity(0.5))
-                                .frame(width: 80, height: 160) // Made skinnier
+                                .frame(width: 80, height: 160)
                             
                             RoundedRectangle(cornerRadius: 12)
                                 .fill(Color(.systemGray5))
-                                .frame(width: 80, height: showChart ? 40 : 0) // Made skinnier
+                                .frame(width: 80, height: showChart ? 40 : 0)
                                 .animation(.spring(response: 0.6, dampingFraction: 0.8).delay(0.3), value: showChart)
                             
                             Text("20%")
@@ -3197,7 +4727,7 @@ struct CreativityComparisonView: View {
                         ZStack(alignment: .bottom) {
                             RoundedRectangle(cornerRadius: 12)
                                 .fill(Color.white.opacity(0.5))
-                                .frame(width: 80, height: 160) // Made skinnier
+                                .frame(width: 80, height: 160)
                             
                             RoundedRectangle(cornerRadius: 12)
                                 .fill(LinearGradient(
@@ -3208,7 +4738,7 @@ struct CreativityComparisonView: View {
                                     startPoint: .top,
                                     endPoint: .bottom
                                 ))
-                                .frame(width: 80, height: showChart ? 120 : 0) // Made skinnier
+                                .frame(width: 80, height: showChart ? 120 : 0)
                                 .animation(.spring(response: 0.6, dampingFraction: 0.8).delay(0.4), value: showChart)
                             
                             Text("2X")
@@ -3269,6 +4799,8 @@ struct CreativityComparisonView: View {
         .navigationBarHidden(true)
         .preferredColorScheme(.light)
         .onAppear {
+            coordinator.currentStep = 10
+            MixpanelService.shared.trackQuestionViewed(questionTitle: "Thrifting Transition", stepNumber: 10)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 showChart = true
                 // Enable the button after all animations complete (0.3s initial delay + 0.9s for animations + 0.1s buffer)
@@ -3280,32 +4812,15 @@ struct CreativityComparisonView: View {
     }
 }
 
-// Update GoalSpeedView to navigate to CreativityComparisonView
+// Update GoalSpeedView to navigate to ThriftingTransitionView
 struct GoalSpeedView: View {
     @Environment(\.dismiss) var dismiss
     @StateObject private var coordinator = OnboardingCoordinator()
-    @State private var selectedSpeed: Double = 3.0 // Default to 3 days
     @State private var navigateToNext = false
     let selectedGoal: String
     
     init(selectedGoal: String) {
         self.selectedGoal = selectedGoal
-        // Set the current step for this view
-        let coordinator = OnboardingCoordinator()
-        coordinator.currentStep = 9
-    }
-    
-    var formattedGoal: String {
-        switch selectedGoal {
-        case "Overcoming writer's block":
-            return "Overcoming writer's block in"
-        case "My wordplay and creativity":
-            return "My wordplay and creativity in"
-        case "Delivering a clear and powerful message":
-            return "Delivering a clear message in"
-        default:
-            return selectedGoal
-        }
     }
     
     var body: some View {
@@ -3337,77 +4852,35 @@ struct GoalSpeedView: View {
             .padding(.horizontal, 24)
             .padding(.top, 8)
             
-            // Title
-            Text("How fast do you want\nto reach your goal?")
-                .font(.system(size: 32, weight: .bold))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 24)
-                .padding(.top, 32)
-            
-            // Goal text and value
-            VStack(spacing: 8) {
-                Text(formattedGoal)
+            // Title and subtitle
+            VStack(alignment: .leading, spacing: 8) {
+                Text("AI Powered Fake Detection")
+                    .font(.system(size: 32, weight: .bold))
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Thrifty analyzes stitching, logos, and materials. We flag possible fakes automatically.")
                     .font(.system(size: 17))
-                    .foregroundColor(.black)
-                
-                Text("\(Int(selectedSpeed)) days")
-                    .font(.system(size: 42, weight: .bold))
+                    .foregroundColor(.gray)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.top, 40)
-            
-            // Slider with emojis
-            VStack(spacing: 24) {
-                HStack(spacing: 0) {
-                    Text("🦥")
-                        .font(.system(size: 32))
-                    Spacer()
-                    Text("🐕")
-                        .font(.system(size: 32))
-                    Spacer()
-                    Text("🐆")
-                        .font(.system(size: 32))
-                }
-                .padding(.horizontal, 24)
-                
-                // Slider
-                Slider(value: $selectedSpeed, in: 1...5, step: 1)
-                    .accentColor(.black)
-                
-                // Speed labels
-                HStack {
-                    Text("1 day")
-                        .font(.system(size: 15))
-                    Spacer()
-                    Text("5 days")
-                        .font(.system(size: 15))
-                }
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 24)
-            .padding(.top, 40)
+            .padding(.top, 32)
             
-            // Recommended button (with black text)
-            Button(action: {
-                withAnimation {
-                    selectedSpeed = 3
-                }
-            }) {
-                Text("Recommended")
-                    .font(.system(size: 17))
-                    .foregroundColor(.black) // Explicitly set to black
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 56)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(16)
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 40)
+            // AI Fake Detection Image
+            Image("ai-fake-detection")
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxHeight: 400)
+                .padding(.horizontal, 16)
+                .padding(.top, 0)
             
             Spacer()
             
-            // Update Continue button to navigate to CreativityComparisonView
+            // Update Continue button to navigate to ThriftingTransitionView
             NavigationLink(isActive: $navigateToNext) {
-                CreativityComparisonView()
+                ThriftingTransitionView()
             } label: {
                 Text("Continue")
                     .font(.system(size: 17, weight: .semibold))
@@ -3418,6 +4891,8 @@ struct GoalSpeedView: View {
                     .cornerRadius(28)
             }
             .simultaneousGesture(TapGesture().onEnded {
+                // Track question-specific answer
+                coordinator.trackQuestionAnswered(answer: "Viewed AI Powered Fake Detection")
                 coordinator.nextStep()
                 navigateToNext = true
             })
@@ -3427,6 +4902,9 @@ struct GoalSpeedView: View {
         .background(Color.white)
         .navigationBarHidden(true)
         .preferredColorScheme(.light)
+        .onAppear {
+            coordinator.currentStep = 9
+        }
     }
 }
 
@@ -3439,19 +4917,16 @@ struct GoalConfirmationView: View {
     
     init(selectedGoal: String) {
         self.selectedGoal = selectedGoal
-        // Set the current step for this view
-        let coordinator = OnboardingCoordinator()
-        coordinator.currentStep = 8
     }
     
     var formattedGoal: String {
         switch selectedGoal {
-        case "Overcomeing writer's block":
-            return "Overcoming writer's block"
-        case "Enhancing wordplay and creativity":
-            return "Enhancing wordplay and creativity"
-        case "Delivering a clear and powerful message":
-            return "Delivering a clear and powerful message"
+        case "I sometimes skip rare/valuable finds":
+            return "Finding rare/valuable items"
+        case "It's a hassle figuring out what things are really worth.":
+            return "Valuing items correctly"
+        case "I regret some of my purchases":
+            return "Making smarter purchases"
         default:
             return selectedGoal
         }
@@ -3532,6 +5007,11 @@ struct GoalConfirmationView: View {
         .background(Color.white)
         .navigationBarHidden(true)
         .preferredColorScheme(.light)
+        .onAppear {
+            coordinator.currentStep = 8
+            MixpanelService.shared.trackQuestionViewed(questionTitle: "Goal Confirmation", stepNumber: 8)
+            // FacebookPixelService.shared.trackOnboardingStepViewed(questionTitle: "Goal Confirmation", stepNumber: 8)
+        }
     }
 }
 
@@ -3542,16 +5022,10 @@ struct GoalSelectionView: View {
     @State private var selectedGoal: String?
     @State private var navigateToConfirmation = false
     
-    init() {
-        // Set the current step for this view
-        let coordinator = OnboardingCoordinator()
-        coordinator.currentStep = 7
-    }
-    
     let goals = [
-        "Overcome writer's block",
-        "Enhance wordplay and creativity",
-        "Deliver a clear and powerful message"
+        "I sometimes skip rare/valuable finds",
+        "It's a hassle figuring out what things are really worth.",
+        "I regret some of my purchases"
     ]
     
     var body: some View {
@@ -3587,7 +5061,7 @@ struct GoalSelectionView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("What are you struggling with?")
                     .font(.system(size: 32, weight: .bold))
-                Text("This will be used to calibrate your custom lyrics.")
+                Text("This will be used to calibrate your custom thrift settings.")
                     .font(.system(size: 17))
                     .foregroundColor(.gray)
             }
@@ -3598,14 +5072,20 @@ struct GoalSelectionView: View {
             // Goal options
             VStack(spacing: 16) {
                 ForEach(goals, id: \.self) { goal in
-                    Button(action: { selectedGoal = goal }) {
+                    Button(action: { 
+                        selectedGoal = goal
+                        // Track question-specific answer
+                        coordinator.trackQuestionAnswered(answer: goal)
+                    }) {
                         Text(goal)
                             .font(.system(size: 17))
                             .frame(maxWidth: .infinity)
                             .frame(height: 56)
                             .background(selectedGoal == goal ? Color.black : Color(.systemGray6))
                             .foregroundColor(selectedGoal == goal ? .white : .black)
-                            .cornerRadius(16)
+                            .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
                     }
                 }
             }
@@ -3641,6 +5121,9 @@ struct GoalSelectionView: View {
         .background(Color.white)
         .navigationBarHidden(true)
         .preferredColorScheme(.light)
+        .onAppear {
+            coordinator.currentStep = 7
+        }
     }
 }
 
@@ -3651,16 +5134,10 @@ struct WritingStyleView: View {
     @State private var selectedStyle: String?
     @State private var navigateToGoal = false
     
-    init() {
-        // Set the current step for this view
-        let coordinator = OnboardingCoordinator()
-        coordinator.currentStep = 6
-    }
-    
     let styles = [
-        ("Storytelling", "text.alignleft"),
-        ("Wordplay & Punchlines", "arrow.up.and.down.and.arrow.left.and.right"),
-        ("Adlibs & Vibes", "face.smiling"),
+        ("Unique, story-rich items", "sparkles"),
+        ("Deals & Discounts", "tag.fill"),
+        ("Quick Flips", "arrow.clockwise"),
         ("No specific style", "xmark.circle")
     ]
     
@@ -3695,9 +5172,9 @@ struct WritingStyleView: View {
             
             // Title and subtitle
             VStack(alignment: .leading, spacing: 8) {
-                Text("Do you have a specific\nwriting style?")
+                Text("Do you have a specific\nthrifting style?")
                     .font(.system(size: 32, weight: .bold))
-                Text("This will be used to calibrate your custom lyrics.")
+                Text("This will be used to calibrate your custom thrift settings.")
                     .font(.system(size: 17))
                     .foregroundColor(.gray)
             }
@@ -3708,7 +5185,11 @@ struct WritingStyleView: View {
             // Style options
             VStack(spacing: 16) {
                 ForEach(styles, id: \.0) { style, icon in
-                    Button(action: { selectedStyle = style }) {
+                    Button(action: { 
+                        selectedStyle = style
+                        // Track question-specific answer
+                        coordinator.trackQuestionAnswered(answer: style)
+                    }) {
                         HStack {
                             Image(systemName: icon)
                                 .font(.system(size: 24))
@@ -3722,7 +5203,9 @@ struct WritingStyleView: View {
                         .frame(height: 56)
                         .background(selectedStyle == style ? Color.black : Color(.systemGray6))
                         .foregroundColor(selectedStyle == style ? .white : .black)
-                        .cornerRadius(16)
+                        .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
                     }
                 }
             }
@@ -3756,6 +5239,9 @@ struct WritingStyleView: View {
         .background(Color.white)
         .navigationBarHidden(true)
         .preferredColorScheme(.light)
+        .onAppear {
+            coordinator.currentStep = 6
+        }
     }
 }
 
@@ -3763,14 +5249,7 @@ struct WritingStyleView: View {
 struct MusicGenreView: View {
     @Environment(\.dismiss) var dismiss
     @StateObject private var coordinator = OnboardingCoordinator()
-    @State private var genre = ""
     @State private var navigateToStyle = false
-    
-    init() {
-        // Set the current step for this view
-        let coordinator = OnboardingCoordinator()
-        coordinator.currentStep = 5
-    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -3803,9 +5282,9 @@ struct MusicGenreView: View {
             
             // Title and subtitle
             VStack(alignment: .leading, spacing: 8) {
-                Text("What's your music\ngenre?")
+                Text("Real-Time Marketplace Data")
                     .font(.system(size: 32, weight: .bold))
-                Text("This will be used to calibrate your custom lyrics")
+                Text("We use AI and real-time listings data from eBay, Etsy, Depop, & More!")
                     .font(.system(size: 17))
                     .foregroundColor(.gray)
             }
@@ -3813,14 +5292,13 @@ struct MusicGenreView: View {
             .padding(.horizontal, 24)
             .padding(.top, 32)
             
-            // Text input field
-            TextField("Type here...", text: $genre)
-                .font(.system(size: 17))
-                .padding(20)
-                .background(Color(.systemGray6))
-                .cornerRadius(16)
-                .padding(.horizontal, 24)
-                .padding(.top, 40)
+            // AI Summary Image
+            Image("ai-summary")
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxHeight: 400)
+                .padding(.horizontal, 16)
+                .padding(.top, 20)
             
             Spacer()
             
@@ -3828,20 +5306,19 @@ struct MusicGenreView: View {
             NavigationLink(isActive: $navigateToStyle) {
                 WritingStyleView()
             } label: {
-                Text("Next")
+                Text("Continue")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(.white)
                     .frame(maxWidth: .infinity)
                     .frame(height: 56)
-                    .background(!genre.isEmpty ? Color.black : Color(.systemGray5))
+                    .background(Color.black)
                     .cornerRadius(28)
             }
-            .disabled(genre.isEmpty)
             .simultaneousGesture(TapGesture().onEnded {
-                if !genre.isEmpty {
-                    coordinator.nextStep()
-                    navigateToStyle = true
-                }
+                // Track question-specific answer
+                coordinator.trackQuestionAnswered(answer: "Viewed Real-Time Marketplace Data")
+                coordinator.nextStep()
+                navigateToStyle = true
             })
             .padding(.horizontal, 24)
             .padding(.bottom, 40)
@@ -3849,6 +5326,9 @@ struct MusicGenreView: View {
         .background(Color.white)
         .navigationBarHidden(true)
         .preferredColorScheme(.light)
+        .onAppear {
+            coordinator.currentStep = 5
+        }
     }
 }
 
@@ -3864,11 +5344,11 @@ struct AnimatedGraph: View {
                 // Graph background
                 RoundedRectangle(cornerRadius: 24)
                     .fill(Color(.systemGray6))
-                    .frame(height: 280)
+                    .frame(height: 240)
                 
                 VStack(alignment: .leading, spacing: 0) {
                     // Your Creativity label
-                    Text("Your Creativity")
+                    Text("Your Savings")
                         .font(.system(size: 20))
                         .foregroundColor(.black)
                         .padding(.leading, 24)
@@ -3920,7 +5400,7 @@ struct AnimatedGraph: View {
                         .animation(.easeOut(duration: 1).delay(0.5), value: showGraph)
                         
                         // Normal writing text
-                        Text("Normal writing")
+                        Text("Normal thrifting")
                             .font(.system(size: 10))
                             .foregroundColor(Color.gray.opacity(0.95))
                             .offset(x: 40, y: 60)
@@ -3950,7 +5430,7 @@ struct AnimatedGraph: View {
             }
             
             // Bottom text
-            Text("87% of users see an uptick\nin song releases even 6 month later")
+            Text("87% of users see an uptick\nin money and time saved")
                 .font(.system(size: 17))
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.horizontal, 24)
@@ -3983,12 +5463,6 @@ struct LongTermResultsView: View {
     @State private var navigateToGenre = false
     @State private var isGraphAnimationComplete = false
     
-    init() {
-        // Set the current step for this view
-        let coordinator = OnboardingCoordinator()
-        coordinator.currentStep = 4
-    }
-    
     var body: some View {
         VStack(spacing: 0) {
             // Header with back button and progress
@@ -4008,7 +5482,7 @@ struct LongTermResultsView: View {
                 HStack(spacing: 0) {
                     Rectangle()
                         .fill(Color.black)
-                        .frame(width: UIScreen.main.bounds.width * 0.238, height: 2) // 5/21 ≈ 0.238
+                        .frame(width: UIScreen.main.bounds.width * 0.125, height: 2) // 2/16 ≈ 0.125
                     
                     Rectangle()
                         .fill(Color(.systemGray5))
@@ -4057,296 +5531,139 @@ struct LongTermResultsView: View {
         .background(Color.white)
         .navigationBarHidden(true)
         .preferredColorScheme(.light)
+        .onAppear {
+            coordinator.currentStep = 1
+            MixpanelService.shared.trackQuestionViewed(questionTitle: "Thrifty creates long-term savings", stepNumber: 1)
+        }
     }
 }
 
-// Update PreviousAppsView to include navigation
-struct PreviousAppsView: View {
-    @Environment(\.dismiss) var dismiss
-    @StateObject private var coordinator = OnboardingCoordinator()
-    @State private var selectedAnswer: String?
-    @State private var navigateToResults = false
-    
-    init() {
-        // Set the current step for this view
-        let coordinator = OnboardingCoordinator()
-        coordinator.currentStep = 3
-    }
-    
-    let answers = [
-        ("No", "hand.thumbsdown"),
-        ("Yes", "hand.thumbsup")
-    ]
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            // Header with back button and progress
-            HStack(spacing: 16) {
-                Button(action: { dismiss() }) {
-                    Circle()
-                        .fill(Color(.systemGray6))
-                        .frame(width: 40, height: 40)
-                        .overlay(
-                            Image(systemName: "arrow.left")
-                                .foregroundColor(.black)
-                                .font(.system(size: 18))
-                        )
-                }
-                
-                // Progress bar
-                HStack(spacing: 0) {
-                    Rectangle()
-                        .fill(Color.black)
-                        .frame(width: UIScreen.main.bounds.width * 0.190, height: 2) // 4/21 ≈ 0.190
-                    
-                    Rectangle()
-                        .fill(Color(.systemGray5))
-                        .frame(height: 2)
-                }
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 8)
-            
-            // Title
-            Text("Have you tried other lyric writing apps?")
-                .font(.system(size: 32, weight: .bold))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 24)
-                .padding(.top, 32)
-            
-            // Answer options
-            VStack(spacing: 16) {
-                ForEach(answers, id: \.0) { answer, icon in
-                    Button(action: { selectedAnswer = answer }) {
-                        HStack {
-                            Image(systemName: icon)
-                                .font(.system(size: 24))
-                                .frame(width: 32)
-                            Text(answer)
-                                .font(.system(size: 17))
-                            Spacer()
-                        }
-                        .padding(.horizontal, 20)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 56)
-                        .background(selectedAnswer == answer ? Color.black : Color(.systemGray6))
-                        .foregroundColor(selectedAnswer == answer ? .white : .black)
-                        .cornerRadius(16)
-                    }
-                }
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 40)
-            
-            Spacer()
-            
-            // Continue button
-            NavigationLink(isActive: $navigateToResults) {
-                LongTermResultsView()
-            } label: {
-                Text("Continue")
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 56)
-                    .background(selectedAnswer != nil ? Color.black : Color(.systemGray5))
-                    .foregroundColor(selectedAnswer != nil ? .white : Color(.systemGray2))
-                    .cornerRadius(28)
-            }
-            .disabled(selectedAnswer == nil)
-            .simultaneousGesture(TapGesture().onEnded {
-                if selectedAnswer != nil {
-                    coordinator.nextStep()
-                    navigateToResults = true
-                }
-            })
-            .padding(.horizontal, 24)
-            .padding(.bottom, 40)
-        }
-        .background(Color.white)
-        .navigationBarHidden(true)
-        .preferredColorScheme(.light)
-    }
-}
 
-// Update SourceSelectionView to include navigation
-struct SourceSelectionView: View {
-    @Environment(\.dismiss) var dismiss
-    @StateObject private var coordinator = OnboardingCoordinator()
-    @State private var selectedSource: String?
-    @State private var navigateToPreviousApps = false
-    @State private var isSavingToFirebase = false
-    
-    init() {
-        // Set the current step for this view
-        let coordinator = OnboardingCoordinator()
-        coordinator.currentStep = 2
-    }
-    
-    let sources = [
-        "Instagram",
-        "Facebook",
-        "TikTok",
-        "Youtube",
-        "Google",
-        "TV"
-    ]
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            // Header with back button and progress
-            HStack(spacing: 16) {
-                Button(action: { dismiss() }) {
-                    Circle()
-                        .fill(Color(.systemGray6))
-                        .frame(width: 40, height: 40)
-                        .overlay(
-                            Image(systemName: "arrow.left")
-                                .foregroundColor(.black)
-                                .font(.system(size: 18))
-                        )
-                }
-                
-                // Progress bar
-                HStack(spacing: 0) {
-                    Rectangle()
-                        .fill(Color.black)
-                        .frame(width: UIScreen.main.bounds.width * 0.143, height: 2) // 3/21 ≈ 0.143
-                    
-                    Rectangle()
-                        .fill(Color(.systemGray5))
-                        .frame(height: 2)
-                }
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 8)
-            
-            // Title
-            Text("Where did you hear\nabout us?")
-                .font(.system(size: 32, weight: .bold))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 24)
-                .padding(.top, 32)
-            
-            // Source options
-            VStack(spacing: 16) {
-                ForEach(sources, id: \.self) { source in
-                    Button(action: { selectedSource = source }) {
-                        HStack {
-                            Image(source.lowercased())
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 24, height: 24)
-                            Text(source)
-                                .font(.system(size: 17))
-                            Spacer()
-                        }
-                        .padding(.horizontal, 20)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 56)
-                        .background(selectedSource == source ? Color.black : Color(.systemGray6))
-                        .foregroundColor(selectedSource == source ? .white : .black)
-                        .cornerRadius(16)
-                    }
-                }
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 40)
-            
-            Spacer()
-            
-            // Continue button
-            NavigationLink(isActive: $navigateToPreviousApps) {
-                PreviousAppsView()
-            } label: {
-                Text("Continue")
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 56)
-                    .background(selectedSource != nil ? Color.black : Color(.systemGray5))
-                    .foregroundColor(selectedSource != nil ? .white : Color(.systemGray2))
-                    .cornerRadius(28)
-            }
-            .disabled(selectedSource == nil)
-            .simultaneousGesture(TapGesture().onEnded {
-                if selectedSource != nil {
-                    saveSourceToFirebase()
-                    coordinator.nextStep()
-                    navigateToPreviousApps = true
-                }
-            })
-            .padding(.horizontal, 24)
-            .padding(.bottom, 40)
-        }
-        .background(Color.white)
-        .navigationBarHidden(true)
-        .preferredColorScheme(.light)
-    }
-    
-    private func saveSourceToFirebase() {
-        guard let selectedSource = selectedSource else { return }
-        
-        let db = Firestore.firestore()
-        let userID = Auth.auth().currentUser?.uid ?? "anonymous"
-        
-        let sourceData: [String: Any] = [
-            "source": selectedSource,
-            "timestamp": FieldValue.serverTimestamp(),
-            "userID": userID
-        ]
-        
-        db.collection("user_sources").addDocument(data: sourceData) { error in
-            if let error = error {
-                print("❌ Error saving source to Firebase: \(error.localizedDescription)")
-            } else {
-                print("✅ Successfully saved source '\(selectedSource)' to Firebase for user: \(userID)")
-            }
-        }
-    }
-}
+
+
 
 // Onboarding Coordinator to manage flow and progress
 class OnboardingCoordinator: ObservableObject {
     @Published var currentStep: Int = 0
-    @Published var totalSteps: Int = 21 // Total number of onboarding steps
+    @Published var totalSteps: Int = 16 // Total number of onboarding steps (removed gender, source, and previous apps screens)
+    
+    // Track step timing for analytics
+    private var stepStartTime: Date?
+    private var onboardingStartTime: Date?
     
     let steps = [
-        "OnboardingGenderView",
-        "SongFrequencyView", 
-        "SourceSelectionView",
-        "PreviousAppsView",
-        "LongTermResultsView",
-        "MusicGenreView",
-        "WritingStyleView",
-        "GoalSelectionView",
-        "GoalConfirmationView",
-        "GoalSpeedView",
-        "CreativityComparisonView",
-        "ObstaclesView",
-        "UltimateGoalView",
-        "ProgressGraphView",
-        "CompletionView",
-        "RatingView",
-        "CustomPlanView",
-        "LoadingView",
-        "FinalCongratulationsView",
-        "CustomPlanSummaryView",
-        "SubscriptionView"
+        "How many items do you thrift per week?", 
+        "Thrifty creates long-term savings",
+        "Real-Time Marketplace Data",
+        "Do you have a specific thrifting style?",
+        "What are you struggling with?",
+        "Goal Confirmation",
+        "AI Powered Fake Detection",
+        "Thrifting Transition",
+        "What's stopping you from reaching your goals?",
+        "What is your ultimate goal?",
+        "You have great potential to crush your goal",
+        "Thank you for trusting us",
+        "Give us rating",
+        "Your Custom Plan",
+        "Setting up your profile...",
+        "Final Congratulations",
+        "Plan Summary",
+        "Subscription"
     ]
     
     var progress: Double {
         return Double(currentStep + 1) / Double(totalSteps)
     }
     
+    // Initialize tracking when onboarding starts
+    func startOnboarding() {
+        onboardingStartTime = Date()
+        stepStartTime = Date()
+        MixpanelService.shared.trackOnboardingStarted()
+        // FacebookPixelService.shared.trackOnboardingStarted()
+        trackStepViewed()
+    }
+    
     func nextStep() {
+        // Track completion of current step
+        trackStepCompleted()
+        
         if currentStep < totalSteps - 1 {
             currentStep += 1
+            stepStartTime = Date() // Start timing the new step
+            trackStepViewed()
+        } else {
+            // Onboarding completed
+            trackOnboardingCompleted()
         }
     }
     
     func previousStep() {
         if currentStep > 0 {
             currentStep -= 1
+            stepStartTime = Date() // Reset timing for the previous step
+            trackStepViewed()
         }
+    }
+    
+    func trackDropoff() {
+        let timeSpent = stepStartTime?.timeIntervalSinceNow.magnitude
+        MixpanelService.shared.trackOnboardingDropoff(
+            step: currentStep,
+            stepName: getCurrentStepName(),
+            timeSpent: timeSpent
+        )
+    }
+    
+    // MARK: - Private Analytics Methods
+    private func trackStepViewed() {
+        let questionTitle = getCurrentStepName()
+        
+        // Only track question-specific event (no duplicates)
+        MixpanelService.shared.trackQuestionViewed(
+            questionTitle: questionTitle,
+            stepNumber: currentStep
+        )
+    }
+    
+    private func trackStepCompleted() {
+        // Don't track step completion separately since we track question answers
+        // This reduces duplicate events
+    }
+    
+    // Public method to track when a question is viewed
+    func trackQuestionViewed(questionTitle: String, stepNumber: Int) {
+        let timeSpent = stepStartTime?.timeIntervalSinceNow.magnitude
+        MixpanelService.shared.trackQuestionViewed(
+            questionTitle: questionTitle,
+            stepNumber: stepNumber,
+            timeSpent: timeSpent
+        )
+    }
+    
+    // New method to track when user answers a specific question
+    func trackQuestionAnswered(answer: String) {
+        let timeSpent = stepStartTime?.timeIntervalSinceNow.magnitude
+        let questionTitle = getCurrentStepName()
+        
+        MixpanelService.shared.trackQuestionAnswered(
+            questionTitle: questionTitle,
+            answer: answer,
+            stepNumber: currentStep,
+            timeSpent: timeSpent
+        )
+    }
+    
+    private func trackOnboardingCompleted() {
+        let totalTime = onboardingStartTime?.timeIntervalSinceNow.magnitude ?? 0
+        MixpanelService.shared.trackOnboardingCompleted(totalTime: totalTime)
+        // FacebookPixelService.shared.trackOnboardingCompleted(totalTime: totalTime, stepsCompleted: currentStep + 1)
+    }
+    
+    private func getCurrentStepName() -> String {
+        guard currentStep < steps.count else { return "Unknown" }
+        return steps[currentStep]
     }
 }
 
@@ -4355,18 +5672,12 @@ struct SongFrequencyView: View {
     @Environment(\.dismiss) var dismiss
     @StateObject private var coordinator = OnboardingCoordinator()
     @State private var selectedFrequency: String?
-    @State private var navigateToSource = false
-    
-    init() {
-        // Set the current step for this view
-        let coordinator = OnboardingCoordinator()
-        coordinator.currentStep = 1
-    }
+    @State private var navigateToResults = false
     
     let frequencies = [
-        ("0-2", "Writes now and then", "music.note"),
-        ("3-5", "A few songs per week", "music.note.list"),
-        ("6+", "Dedicated Artist", "music.quarternote.3")
+        ("0-2", "Thrifts now and then", "bag"),
+        ("3-5", "A few items per week", "cart"),
+        ("6+", "Dedicated Thrifter", "star.fill")
     ]
     
     var body: some View {
@@ -4388,7 +5699,7 @@ struct SongFrequencyView: View {
                 HStack(spacing: 0) {
                     Rectangle()
                         .fill(Color.black)
-                        .frame(width: UIScreen.main.bounds.width * 0.095, height: 2) // 2/21 ≈ 0.095
+                        .frame(width: UIScreen.main.bounds.width * 0.0625, height: 2) // 1/16 ≈ 0.0625
                     
                     Rectangle()
                         .fill(Color(.systemGray5))
@@ -4400,9 +5711,9 @@ struct SongFrequencyView: View {
             
             // Title and subtitle
             VStack(alignment: .leading, spacing: 8) {
-                Text("How many songs do you write per week?")
+                Text("How many items do you thrift per week?")
                     .font(.system(size: 32, weight: .bold))
-                Text("This will be used to calibrate your custom lyrics.")
+                Text("This will be used to calibrate your custom thrift settings.")
                     .font(.system(size: 17))
                     .foregroundColor(.gray)
             }
@@ -4413,7 +5724,11 @@ struct SongFrequencyView: View {
             // Frequency options
             VStack(spacing: 16) {
                 ForEach(frequencies, id: \.0) { frequency, description, icon in
-                    Button(action: { selectedFrequency = frequency }) {
+                    Button(action: { 
+                        selectedFrequency = frequency
+                        // Track question-specific answer
+                        coordinator.trackQuestionAnswered(answer: frequency)
+                    }) {
                         HStack {
                             Image(systemName: icon)
                                 .font(.system(size: 24))
@@ -4432,7 +5747,9 @@ struct SongFrequencyView: View {
                         .frame(height: 72)
                         .background(selectedFrequency == frequency ? Color.black : Color(.systemGray6))
                         .foregroundColor(selectedFrequency == frequency ? .white : .black)
-                        .cornerRadius(16)
+                        .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
                     }
                 }
             }
@@ -4442,8 +5759,8 @@ struct SongFrequencyView: View {
             Spacer()
             
             // Continue button
-            NavigationLink(isActive: $navigateToSource) {
-                SourceSelectionView()
+            NavigationLink(isActive: $navigateToResults) {
+                LongTermResultsView()
                     .horizontalSlideTransition()
             } label: {
                 Text("Continue")
@@ -4458,7 +5775,7 @@ struct SongFrequencyView: View {
             .simultaneousGesture(TapGesture().onEnded {
                 if selectedFrequency != nil {
                     coordinator.nextStep()
-                    navigateToSource = true
+                    navigateToResults = true
                 }
             })
             .padding(.horizontal, 24)
@@ -4467,119 +5784,23 @@ struct SongFrequencyView: View {
         .background(Color.white)
         .navigationBarHidden(true)
         .preferredColorScheme(.light)
-    }
-}
-
-struct OnboardingGenderView: View {
-    @Environment(\.dismiss) var dismiss
-    @StateObject private var coordinator = OnboardingCoordinator()
-    @State private var selectedGender: String?
-    @State private var navigateToFrequency = false
-    
-    init() {
-        // Set the current step for this view
-        let coordinator = OnboardingCoordinator()
-        coordinator.currentStep = 0
-    }
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            // Header with back button and progress
-            HStack(spacing: 16) {
-                Button(action: { dismiss() }) {
-                    Circle()
-                        .fill(Color(.systemGray6))
-                        .frame(width: 40, height: 40)
-                        .overlay(
-                            Image(systemName: "arrow.left")
-                                .foregroundColor(.black)
-                                .font(.system(size: 18))
-                        )
-                }
-                
-                // Progress bar
-                HStack(spacing: 0) {
-                    Rectangle()
-                        .fill(Color.black)
-                        .frame(width: UIScreen.main.bounds.width * 0.048, height: 2) // 1/21 ≈ 0.048
-                    
-                    Rectangle()
-                        .fill(Color(.systemGray5))
-                        .frame(height: 2)
-                }
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 8)
-                
-                // Title and subtitle
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Choose your Gender")
-                        .font(.system(size: 32, weight: .bold))
-                    Text("This will be used to calibrate your custom lyrics.")
-                        .font(.system(size: 17))
-                        .foregroundColor(.gray)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 24)
-                .padding(.top, 32)
-                
-                // Gender options
-                VStack(spacing: 16) {
-                    ForEach(["Male", "Female"], id: \.self) { gender in
-                        Button(action: { selectedGender = gender }) {
-                            Text(gender)
-                                .font(.system(size: 17))
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 56)
-                                .background(selectedGender == gender ? Color.black : Color(.systemGray6))
-                                .foregroundColor(selectedGender == gender ? .white : .black)
-                                .cornerRadius(16)
-                        }
-                    }
-                }
-                .padding(.horizontal, 24)
-                .padding(.top, 40)
-                
-                Spacer()
-                
-                // Continue button
-                NavigationLink(isActive: $navigateToFrequency) {
-                    SongFrequencyView()
-                        .horizontalSlideTransition()
-                } label: {
-                    Text("Continue")
-                        .font(.system(size: 17, weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 56)
-                        .background(selectedGender != nil ? Color.black : Color(.systemGray5))
-                        .foregroundColor(selectedGender != nil ? .white : Color(.systemGray2))
-                        .cornerRadius(28)
-                }
-                .disabled(selectedGender == nil)
-                .simultaneousGesture(TapGesture().onEnded {
-                    if selectedGender != nil {
-                        coordinator.nextStep()
-                        navigateToFrequency = true
-                    }
-                })
-                .padding(.horizontal, 24)
-                .padding(.bottom, 40)
+        .onAppear {
+            coordinator.currentStep = 0
         }
-        .background(Color.white)
-        .navigationBarHidden(true)
-        .preferredColorScheme(.light)
     }
 }
 
-// Central music emoji with wiggle animation
-struct WiggleMusicEmoji: View {
+
+
+// Central shopping cart emoji with wiggle animation
+struct WiggleShoppingCartEmoji: View {
     @State private var offsetX: CGFloat = 0
     @State private var offsetY: CGFloat = 0
     @State private var scale: CGFloat = 1.0
     @State private var rotation: Double = 0
     
     var body: some View {
-        Text("🎵")
+        Text("🛒")
             .font(.system(size: 32))
             .scaleEffect(scale)
             .rotationEffect(.degrees(rotation))
@@ -4622,6 +5843,7 @@ struct WiggleMusicEmoji: View {
 
 struct CustomPlanView: View {
     @Environment(\.dismiss) var dismiss
+    @StateObject private var coordinator = OnboardingCoordinator()
     @State private var showContent = false
     @State private var animationProgress: CGFloat = 0
     @State private var navigateToNext = false
@@ -4685,8 +5907,8 @@ struct CustomPlanView: View {
                         .opacity(showContent ? 1 : 0)
                 }
                 
-                // Central wiggling music emoji
-                WiggleMusicEmoji()
+                // Central wiggling shopping cart emoji
+                WiggleShoppingCartEmoji()
                     .opacity(showContent ? 1 : 0)
                     .animation(.easeOut(duration: 0.6).delay(0.8), value: showContent)
             }
@@ -4700,7 +5922,7 @@ struct CustomPlanView: View {
                 .animation(.easeOut(duration: 0.6).delay(0.6), value: showContent)
             
             // Main title
-            Text("Time to generate\nyour custom plan!")
+            Text("Time to generate\nyour custom profile!")
                 .font(.system(size: 32, weight: .bold))
                 .multilineTextAlignment(.center)
                 .padding(.top, 16)
@@ -4737,6 +5959,8 @@ struct CustomPlanView: View {
         .navigationBarHidden(true)
         .preferredColorScheme(.light)
         .onAppear {
+            coordinator.currentStep = 16
+            MixpanelService.shared.trackQuestionViewed(questionTitle: "Your Custom Plan", stepNumber: 16)
             // Start the animations sequence
             withAnimation(.easeOut(duration: 0.6)) {
                 showContent = true
@@ -5068,14 +6292,799 @@ struct CodeDigitField: View {
     }
 }
 
+// MARK: - Google Maps View
+struct GoogleMapsView: UIViewRepresentable {
+    @ObservedObject var mapService: ThriftStoreMapService
+    @ObservedObject private var locationManager = LocationManager.shared
+    @ObservedObject var mapController: MapViewController
+    
+    func makeUIView(context: Context) -> GMSMapView {
+        print("🗺️ Creating Google Maps view...")
+        
+        // Create map view with default frame - SwiftUI will handle sizing
+        let mapView = GMSMapView()
+        mapView.delegate = context.coordinator
+        
+        // Configure map settings
+        mapView.settings.compassButton = false // We have custom zoom controls
+        mapView.settings.myLocationButton = false // We have custom location tracking
+        mapView.isMyLocationEnabled = true
+        mapView.settings.scrollGestures = true
+        mapView.settings.zoomGestures = true
+        mapView.settings.tiltGestures = false
+        mapView.settings.rotateGestures = false
+        
+        // Configure map appearance
+        mapView.mapType = .normal
+        mapView.isBuildingsEnabled = true
+        mapView.isTrafficEnabled = false
+        mapView.isIndoorEnabled = false
+        
+        // Add custom map style to hide street names and labels
+        let styleJSON = """
+        [
+          {
+            "featureType": "all",
+            "elementType": "labels.text",
+            "stylers": [
+              {
+                "visibility": "off"
+              }
+            ]
+          },
+          {
+            "featureType": "road",
+            "elementType": "labels",
+            "stylers": [
+              {
+                "visibility": "off"
+              }
+            ]
+          },
+          {
+            "featureType": "poi",
+            "elementType": "labels",
+            "stylers": [
+              {
+                "visibility": "off"
+              }
+            ]
+          },
+          {
+            "featureType": "transit",
+            "elementType": "labels",
+            "stylers": [
+              {
+                "visibility": "off"
+              }
+            ]
+          }
+        ]
+        """
+        
+        if let style = try? GMSMapStyle(jsonString: styleJSON) {
+            mapView.mapStyle = style
+            print("🗺️ Applied custom map style to hide labels")
+        } else {
+            print("⚠️ Failed to apply custom map style")
+        }
+        
+        // Set initial camera position
+        let defaultLocation = CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194) // San Francisco
+        let initialLocation = locationManager.location?.coordinate ?? defaultLocation
+        
+            let camera = GMSCameraPosition.camera(
+                withLatitude: initialLocation.latitude,
+                longitude: initialLocation.longitude,
+                zoom: 12.0
+            )
+            mapView.camera = camera
+        
+        print("📍 Initial map location set to: \(initialLocation)")
+        
+        // Setup coordinator with map view
+        context.coordinator.setup(mapView: mapView)
+        
+        return mapView
+    }
+    
+    func updateUIView(_ mapView: GMSMapView, context: Context) {
+        // Update store markers
+        context.coordinator.updateStores(stores: mapService.thriftStores)
+        
+        // Update user location if available and trigger search if needed
+        if let location = locationManager.location {
+            context.coordinator.updateUserLocation(location: location, mapView: mapView)
+            
+            // If we haven't searched for stores yet and now have location, search now
+            if mapService.thriftStores.isEmpty && !context.coordinator.hasSearchedForStores {
+                print("🔍 Location now available - searching for thrift stores...")
+                context.coordinator.hasSearchedForStores = true
+                Task {
+                    await mapService.searchNearbyThriftStores(
+                        latitude: location.coordinate.latitude,
+                        longitude: location.coordinate.longitude
+                    )
+                }
+            }
+        }
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, GMSMapViewDelegate {
+        var parent: GoogleMapsView
+        var mapView: GMSMapView?
+        var markers: [GMSMarker] = []
+        var hasInitializedLocation = false
+        var hasSearchedForStores = false
+        
+        init(_ parent: GoogleMapsView) {
+            self.parent = parent
+            super.init()
+        }
+        
+        func setup(mapView: GMSMapView) {
+            self.mapView = mapView
+            parent.mapController.setMapView(mapView)
+            
+            // Start location tracking
+            parent.locationManager.startLocationTracking()
+            
+            // Load nearby stores if location is available immediately
+            if let location = parent.locationManager.location {
+                performInitialSearch(location: location)
+            } else {
+                print("📍 No location available yet, will search when location is found")
+                // Set up a timer to retry getting location periodically
+                setupLocationRetryTimer()
+            }
+        }
+        
+        private func performInitialSearch(location: CLLocation) {
+            guard !hasSearchedForStores else { return }
+            hasSearchedForStores = true
+            
+            Task {
+                print("🔍 Performing initial search for thrift stores...")
+                await parent.mapService.searchNearbyThriftStores(
+                    latitude: location.coordinate.latitude,
+                    longitude: location.coordinate.longitude
+                )
+            }
+        }
+        
+        private func setupLocationRetryTimer() {
+            // Check for location every 2 seconds for up to 10 seconds
+            var attempts = 0
+            Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { timer in
+                attempts += 1
+                
+                if let location = self.parent.locationManager.location {
+                    print("📍 Location found after \(attempts) attempts")
+                    self.performInitialSearch(location: location)
+                    timer.invalidate()
+                } else if attempts >= 5 {
+                    print("📍 Location not found after 10 seconds, stopping retry")
+                    timer.invalidate()
+                }
+            }
+        }
+        
+        func updateStores(stores: [ThriftStore]) {
+            guard let mapView = mapView else { 
+                print("❌ MapView not available for updating stores")
+                return 
+            }
+            
+            // Clear existing markers
+            markers.forEach { $0.map = nil }
+            markers.removeAll()
+            
+            // Add new markers
+            for store in stores {
+                let marker = GMSMarker()
+                marker.position = CLLocationCoordinate2D(
+                    latitude: store.latitude,
+                    longitude: store.longitude
+                )
+                marker.title = store.title.lowercased() + " 🔗"
+                marker.snippet = store.address
+                marker.userData = store
+                marker.map = mapView
+                marker.icon = createCustomMarkerIcon(for: store)
+                markers.append(marker)
+            }
+            
+            print("🗺️ Updated Google Maps with \(stores.count) store markers")
+            
+            // If we have markers, adjust camera to show them
+            if !markers.isEmpty && !hasInitializedLocation {
+                var bounds = GMSCoordinateBounds()
+                markers.forEach { marker in
+                    bounds = bounds.includingCoordinate(marker.position)
+                }
+                
+                let update = GMSCameraUpdate.fit(bounds, withPadding: 50.0)
+                mapView.animate(with: update)
+                print("📍 Adjusted camera to show all \(markers.count) store markers")
+            }
+        }
+        
+        func updateUserLocation(location: CLLocation, mapView: GMSMapView) {
+            guard !hasInitializedLocation else { return }
+            
+            let camera = GMSCameraPosition.camera(
+                withLatitude: location.coordinate.latitude,
+                longitude: location.coordinate.longitude,
+                zoom: 12.0
+            )
+            
+            mapView.animate(to: camera)
+            hasInitializedLocation = true
+            print("📍 Google Maps centered on user location: \(location.coordinate)")
+        }
+        
+        func mapView(_ mapView: GMSMapView, didTap marker: GMSMarker) -> Bool {
+            handleMarkerTap(marker: marker)
+            return true
+        }
+        
+        func mapView(_ mapView: GMSMapView, didTapAt coordinate: CLLocationCoordinate2D) {
+            handleCoordinateTap(coordinate: coordinate, mapView: mapView)
+        }
+        
+        private func handleMarkerTap(marker: GMSMarker) {
+            guard let store = marker.userData as? ThriftStore,
+                  !store.address.isEmpty else {
+                print("❌ No valid store data found")
+                return
+            }
+            
+            // Track map interaction for consumption data
+            DispatchQueue.main.async {
+                ConsumptionRequestService.shared.trackMapInteraction()
+                ConsumptionRequestService.shared.trackFeatureUsed("map_interaction")
+            }
+            
+            let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+            impactFeedback.impactOccurred()
+            
+            UIPasteboard.general.string = store.address
+            print("✅ Address copied to clipboard: \(store.address)")
+            
+            showCopyAlert(store: store)
+        }
+        
+        private func handleCoordinateTap(coordinate: CLLocationCoordinate2D, mapView: GMSMapView) {
+            let tapTolerance: Double = 0.001
+            
+            for marker in markers {
+                let distance = abs(marker.position.latitude - coordinate.latitude) + 
+                              abs(marker.position.longitude - coordinate.longitude)
+                
+                if distance < tapTolerance {
+                    handleMarkerTap(marker: marker)
+                    return
+                }
+            }
+        }
+        
+        private func showCopyAlert(store: ThriftStore) {
+            let alert = UIAlertController(
+                title: "✨ Address Copied!",
+                message: "\n\(store.title)\n\(store.address)",
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "Got it!", style: .default))
+            
+            DispatchQueue.main.async {
+                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                   let window = windowScene.windows.first,
+                   let rootViewController = window.rootViewController {
+                    
+                    var topController = rootViewController
+                    while let presented = topController.presentedViewController {
+                        topController = presented
+                    }
+                    
+                    topController.present(alert, animated: true)
+                }
+            }
+        }
+        
+        private func createCustomMarkerIcon(for store: ThriftStore) -> UIImage {
+            // Prepare text with emoji and lowercase
+            let baseText = store.title.lowercased()
+            let linkEmoji = " 🔗"
+            let maxWidth: CGFloat = 200 // Maximum width for text
+            
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 12, weight: .medium),
+                .foregroundColor: UIColor.black
+            ]
+            
+            // Check if text needs truncation
+            let fullText = baseText + linkEmoji
+            let fullTextSize = fullText.size(withAttributes: attributes)
+            
+            let finalText: String
+            if fullTextSize.width > maxWidth {
+                // Truncate and add ellipsis + emoji
+                var truncatedText = baseText
+                let ellipsisEmoji = "..." + linkEmoji
+                let ellipsisSize = ellipsisEmoji.size(withAttributes: attributes)
+                let availableWidth = maxWidth - ellipsisSize.width
+                
+                // Keep removing characters until it fits
+                while truncatedText.size(withAttributes: attributes).width > availableWidth && !truncatedText.isEmpty {
+                    truncatedText = String(truncatedText.dropLast())
+                }
+                finalText = truncatedText + ellipsisEmoji
+            } else {
+                finalText = fullText
+            }
+            
+            // Calculate final text size and container dimensions
+            let finalTextSize = finalText.size(withAttributes: attributes)
+            let padding: CGFloat = 8 // Tighter padding on left/right
+            let containerWidth = finalTextSize.width + (padding * 2)
+            let containerHeight: CGFloat = 32
+            let totalHeight: CGFloat = 48 // More space for pin to prevent cropping
+            
+            let size = CGSize(width: containerWidth, height: totalHeight)
+            let renderer = UIGraphicsImageRenderer(size: size)
+            
+            return renderer.image { context in
+                let cgContext = context.cgContext
+                
+                // Create rounded rectangle with less rounded corners
+                let backgroundRect = CGRect(x: 0, y: 0, width: containerWidth, height: containerHeight)
+                let cornerRadius: CGFloat = 8.0 // Less rounded
+                
+                // Draw rounded rectangle background (no border)
+                cgContext.setFillColor(UIColor.white.cgColor)
+                let roundedPath = UIBezierPath(roundedRect: backgroundRect, cornerRadius: cornerRadius)
+                cgContext.addPath(roundedPath.cgPath)
+                cgContext.fillPath()
+                
+                // Draw text centered in container
+                let textRect = CGRect(
+                    x: padding,
+                    y: (containerHeight - finalTextSize.height) / 2,
+                    width: finalTextSize.width,
+                    height: finalTextSize.height
+                )
+                
+                finalText.draw(in: textRect, withAttributes: attributes)
+                
+                // Add iPhone pin emoji instead of gray rectangle
+                let pinEmoji = "📍"
+                let pinAttributes: [NSAttributedString.Key: Any] = [
+                    .font: UIFont.systemFont(ofSize: 16),
+                    .foregroundColor: UIColor.black
+                ]
+                let pinSize = pinEmoji.size(withAttributes: pinAttributes)
+                let pinRect = CGRect(
+                    x: (containerWidth - pinSize.width) / 2,
+                    y: containerHeight,
+                    width: pinSize.width,
+                    height: pinSize.height
+                )
+                
+                pinEmoji.draw(in: pinRect, withAttributes: pinAttributes)
+            }
+        }
+    }
+}
+
+// Modern Featured Post Card Component
+struct FeaturedPostCard: View {
+    let username: String
+    let title: String
+    let imageName: String
+    let upvotes: Int
+    let likes: Int
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Post image as main content
+            ZStack(alignment: .topLeading) {
+                Image(imageName)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(height: 240)
+                    .clipped()
+                
+                // Gradient overlay for text readability - only at top
+                LinearGradient(
+                    gradient: Gradient(colors: [
+                        Color.black.opacity(0.6),
+                        Color.clear
+                    ]),
+                    startPoint: .top,
+                    endPoint: .center
+                )
+                
+                // Top content
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        // User avatar
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 28, height: 28)
+                            .overlay(
+                                Text(String(username.dropFirst().prefix(1).uppercased()))
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundColor(.white)
+                            )
+                        
+                        Text(username)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.white)
+                        
+                        Spacer()
+                    }
+                }
+                .padding(16)
+            }
+            
+            // Bottom content area
+            VStack(alignment: .leading, spacing: 8) {
+                // Post title
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.black)
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(2)
+                
+                // Upvote and like section
+                HStack(spacing: 12) {
+                    Button(action: {}) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.system(size: 16))
+                                .foregroundColor(.orange)
+                            
+                            Text("\(upvotes)")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.black)
+                        }
+                    }
+                    
+                    Spacer()
+                    
+                    Button(action: {}) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "heart")
+                                .font(.system(size: 14))
+                                .foregroundColor(.gray)
+                            
+                            Text("\(likes)")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.gray)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.white)
+        }
+        .background(Color.white)
+        .cornerRadius(20)
+        .shadow(color: Color.black.opacity(0.12), radius: 16, x: 0, y: 8)
+    }
+}
+
+// Tinder-style Card Stack Component
+struct TinderCardStack: View {
+    @State private var cards: [CardData] = [
+        CardData(id: 0, username: "u/sarah_thrifts", title: "Mid-century lamp for $8, sold for $120 on FB Marketplace 💡", imageName: "lamp-find", upvotes: 167),
+        CardData(id: 1, username: "u/retro_mike", title: "Found this Pokémon Blue at Goodwill for $3, sold for $85! 🎮", imageName: "pokemon", upvotes: 342),
+        CardData(id: 2, username: "u/luxe_hunter", title: "This Gucci bag from estate sale - paid $40, worth $850! 👜", imageName: "found-this-purse", upvotes: 289),
+        CardData(id: 3, username: "u/deal_seeker22", title: "Goodwill bins haul - $12 investment, $340 profit this week! 🛍️", imageName: "goodwill-bins", upvotes: 198),
+        CardData(id: 4, username: "u/vintage_finds", title: "Toy lot from garage sale - $25 in, $280 out! 🧸", imageName: "toy-lot", upvotes: 234)
+    ]
+    
+    @State private var dragOffset = CGSize.zero
+    @State private var dragRotation: Double = 0
+    @State private var isAnimating = false
+    
+    var body: some View {
+        ZStack {
+            // Background cards (staggered)
+            ForEach(0..<cards.count, id: \.self) { index in
+                cardView(for: index)
+            }
+        }
+    }
+    
+    private func cardView(for index: Int) -> some View {
+        let card = cards[index]
+        let isTopCard = index == cards.count - 1
+        let cardIndex = cards.count - 1 - index
+        
+        // More visible staggering effects
+        let scaleValue = isTopCard ? 1.0 : 1.0 - (Double(cardIndex) * 0.06)
+        let xOffset = isTopCard ? dragOffset.width : CGFloat(cardIndex * -8) // More visible offset
+        let yOffset = isTopCard ? dragOffset.height : CGFloat(cardIndex * 12)
+        let rotation = isTopCard ? dragRotation : Double(cardIndex) * -2.0 // More visible rotation
+        let opacityValue = cardIndex > 2 ? 0 : 1.0 - (Double(cardIndex) * 0.12) // Less opacity reduction for visibility
+        
+        return FeaturedPostCard(
+            username: card.username,
+            title: card.title,
+            imageName: card.imageName,
+            upvotes: card.upvotes,
+            likes: card.likes
+        )
+        .scaleEffect(scaleValue)
+        .offset(x: xOffset, y: yOffset)
+        .rotationEffect(.degrees(rotation))
+        .opacity(opacityValue)
+        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: dragOffset)
+        .animation(.spring(response: 0.6, dampingFraction: 0.8), value: cards.count) // Smoother card transitions
+        .animation(.spring(response: 0.5, dampingFraction: 0.75), value: isTopCard) // Smooth scale/opacity transitions
+        .gesture(isTopCard ? createDragGesture() : nil)
+        .zIndex(isTopCard ? 100 : Double(index))
+    }
+    
+    private func createDragGesture() -> some Gesture {
+        DragGesture(minimumDistance: 20) // Increased minimum distance
+            .onChanged { value in
+                // Only respond to significantly horizontal drags (more than 2:1 ratio)
+                if abs(value.translation.width) > abs(value.translation.height) * 2 {
+                    dragOffset = value.translation
+                    dragRotation = Double(value.translation.width / 10)
+                }
+            }
+            .onEnded { value in
+                // Only handle swipe if it's significantly horizontal
+                if abs(value.translation.width) > abs(value.translation.height) * 2 {
+                    handleDragEnd(value)
+                } else {
+                    // Reset if it was a vertical scroll
+                    dragOffset = .zero
+                    dragRotation = 0
+                }
+            }
+    }
+    
+    private func handleDragEnd(_ value: DragGesture.Value) {
+        // Prevent multiple simultaneous swipes
+        guard !isAnimating else { return }
+        
+        let swipeThreshold: CGFloat = 100
+        
+        if abs(value.translation.width) > swipeThreshold {
+            // Mark as animating to prevent multiple swipes
+            isAnimating = true
+            
+            // Swipe away animation
+            let direction: CGFloat = value.translation.width > 0 ? 1 : -1
+            
+            withAnimation(.easeOut(duration: 0.3)) {
+                dragOffset = CGSize(width: direction * 500, height: value.translation.height)
+                dragRotation = Double(direction * 20)
+            }
+            
+            // Remove card after animation completes
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                removeTopCard()
+            }
+        } else {
+            // Snap back with animation
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                dragOffset = .zero
+                dragRotation = 0
+            }
+        }
+    }
+    
+    private func removeTopCard() {
+        guard !cards.isEmpty else { return }
+        
+        let removedCard = cards.removeLast()
+        
+        // Reset drag state immediately to prevent double appearance
+        dragOffset = .zero
+        dragRotation = 0
+        
+        // Wait for the UI to settle before adding card back
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            withAnimation(.none) {
+                cards.insert(removedCard, at: 0)
+            }
+            
+            // Reset animation state to allow next swipe
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                isAnimating = false
+            }
+        }
+    }
+}
+
+// Animated Info Bubble Component
+struct InfoBubble: View {
+    @Binding var showingInfo: Bool
+    @State private var isPulsating = false
+    
+    var body: some View {
+        Button(action: {
+            showingInfo = true
+        }) {
+            Image(systemName: "info.circle.fill")
+                .font(.system(size: 14))
+                .foregroundColor(.blue)
+                .opacity(isPulsating ? 0.6 : 1.0)
+                .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: isPulsating)
+        }
+        .onAppear {
+            isPulsating = true
+        }
+    }
+}
+
+// Card Data Model
+struct CardData: Identifiable {
+    let id: Int
+    let username: String
+    let title: String
+    let imageName: String
+    let upvotes: Int
+    let likes: Int
+    
+    init(id: Int, username: String, title: String, imageName: String, upvotes: Int) {
+        self.id = id
+        self.username = username
+        self.title = title
+        self.imageName = imageName
+        self.upvotes = upvotes
+        self.likes = Int.random(in: 15...89) // Random likes between 15-89
+    }
+}
+
+// MARK: - Recent Finds Models
+struct RecentFind: Identifiable, Codable {
+    let id: UUID
+    let name: String
+    let category: String
+    let estimatedValue: Double
+    let condition: String
+    let brand: String?
+    let location: String // Store location
+    let dateFound: Date
+    let notes: String?
+    let imageData: Data? // Captured image data
+    
+}
+
+class RecentFindsManager: ObservableObject {
+    @Published var recentFinds: [RecentFind] = []
+    
+    func addRecentFind(_ find: RecentFind) {
+        recentFinds.insert(find, at: 0) // Add to beginning for recency
+        saveFinds()
+    }
+    
+    func saveFinds() {
+        do {
+            let encoded = try JSONEncoder().encode(recentFinds)
+            UserDefaults.standard.set(encoded, forKey: "RecentFinds")
+            print("💾 Successfully saved \(recentFinds.count) recent finds")
+        } catch {
+            print("❌ Failed to save recent finds: \(error)")
+        }
+    }
+    
+    init() {
+        loadFinds()
+        // Add sample data if empty
+        if recentFinds.isEmpty {
+            addSampleData()
+        }
+    }
+    
+    private func loadFinds() {
+        guard let data = UserDefaults.standard.data(forKey: "RecentFinds") else {
+            print("📂 No saved recent finds data found")
+            return
+        }
+        
+        do {
+            let decoded = try JSONDecoder().decode([RecentFind].self, from: data)
+            recentFinds = decoded
+            print("📂 Successfully loaded \(decoded.count) recent finds")
+        } catch {
+            print("❌ Failed to decode recent finds: \(error)")
+            // Clear corrupted data and start fresh
+            UserDefaults.standard.removeObject(forKey: "RecentFinds")
+        }
+    }
+    
+    private func addSampleData() {
+        let sampleFinds = [
+            RecentFind(
+                id: UUID(),
+                name: "Nike Air Jordan 1's - T-Scott",
+                category: "Sneakers",
+                estimatedValue: 215.00,
+                condition: "8/10",
+                brand: "Nike",
+                location: "Goodwill",
+                dateFound: Calendar.current.date(byAdding: .hour, value: -2, to: Date()) ?? Date(),
+                notes: "Size 10.5 - popular size, light creasing, OG all with box (missing lid), slight yellowing on midsole",
+                imageData: nil
+            ),
+            RecentFind(
+                id: UUID(),
+                name: "Vintage Ecko Navy Blue Hoodie",
+                category: "Clothing",
+                estimatedValue: 85.00,
+                condition: "8/10",
+                brand: "Ecko Unltd",
+                location: "Thrift Store",
+                dateFound: Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date(),
+                notes: "Vintage Y2K style, navy blue with rhino logo, size XL",
+                imageData: nil
+            ),
+            RecentFind(
+                id: UUID(),
+                name: "Coach Legacy Shoulder Bag",
+                category: "Accessories",
+                estimatedValue: 100.00,
+                condition: "9/10",
+                brand: "Coach",
+                location: "Estate Sale",
+                dateFound: Calendar.current.date(byAdding: .day, value: -2, to: Date()) ?? Date(),
+                notes: "Model 9966 - discontinued style, black pebbled leather, silver hardware, dust bag included",
+                imageData: nil
+            ),
+            RecentFind(
+                id: UUID(),
+                name: "Jordan 4 White Cement",
+                category: "Sneakers",
+                estimatedValue: 215.00,
+                condition: "8/10",
+                brand: "Nike",
+                location: "Goodwill",
+                dateFound: Calendar.current.date(byAdding: .day, value: -3, to: Date()) ?? Date(),
+                notes: "2016 release, size 10.5, OG all with box, light creasing, no major flaws",
+                imageData: nil
+            ),
+            RecentFind(
+                id: UUID(),
+                name: "Vintage Levi's Denim Jacket",
+                category: "Clothing",
+                estimatedValue: 45.00,
+                condition: "7/10",
+                brand: "Levi's",
+                location: "Garage Sale",
+                dateFound: Calendar.current.date(byAdding: .day, value: -4, to: Date()) ?? Date(),
+                notes: "Classic blue wash, size Large, some fading adds to vintage appeal",
+                imageData: nil
+            )
+        ]
+        
+        recentFinds = sampleFinds
+        saveFinds()
+    }
+}
+
+
 struct ContentView: View {
     @StateObject private var authManager = AuthenticationManager.shared
     @State private var showingSignIn = false
     @State private var showingEmailSignIn = false
     @State private var showingOnboarding = false
+    @State private var navigateToTryForFree = false
 
     
     var body: some View {
+        NavigationView {
             ZStack(alignment: .topLeading) {
             VStack(spacing: 0) {
                 // Main Content
@@ -5096,17 +7105,14 @@ struct ContentView: View {
                     .padding(.top, 20)
                     .padding(.bottom, 40)
                     
-                    // Main Image
-                    Image("main")
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
+                    // Main Video
+                    MainVideoPlayer(videoName: "main")
                         .frame(maxWidth: .infinity)
                         .clipped()
                         .padding(.bottom, 30)
-                        .padding(.horizontal, -20)
                     
                     // Title Text
-                    Text("Lyric writing\nmade easy")
+                    Text("Thrifting\nmade easy")
                         .font(.system(size: 42, weight: .bold))
                         .multilineTextAlignment(.center)
                         .padding(.bottom, 40)
@@ -5135,28 +7141,9 @@ struct ContentView: View {
             }
             .background(Color.white)
             .preferredColorScheme(.light)
-            
-            // Debug button positioned in top left - SUPER VISIBLE
-            Button(action: {
-                // Debug: bypass authentication and load main app
-                Task { @MainActor in
-                    authManager.isLoggedIn = true
-                    authManager.hasCompletedSubscription = true
-                    print("🐛 DEBUG: Bypassed authentication - loading main app")
-                }
-            }) {
-                Text("🐛 DEBUG")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(Color.black)
-                    .cornerRadius(12)
-                    .shadow(color: .black, radius: 5, x: 2, y: 2)
-            }
-            .padding(.top, 60)
-            .padding(.leading, 20)
-            .zIndex(999)
+
+        }
+        .navigationBarHidden(true)
         }
             .sheet(isPresented: Binding(
                 get: { showingSignIn && !authManager.isLoggedIn },
@@ -5173,7 +7160,7 @@ struct ContentView: View {
             }
             .fullScreenCover(isPresented: $showingOnboarding) {
                 NavigationView {
-                    OnboardingGenderView()
+                    SongFrequencyView()
                         .horizontalSlideTransition()
                 }
                 .navigationViewStyle(StackNavigationViewStyle())
@@ -5197,16 +7184,124 @@ struct ContentView_Previews: PreviewProvider {
     }
 }
 
+// PaywallResumeView - Shows subscription screen directly when user returns to app
+struct PaywallResumeView: View {
+    @StateObject private var authManager = AuthenticationManager.shared
+    
+    var body: some View {
+        NavigationView {
+            SubscriptionView()
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+        .preferredColorScheme(.light)
+    }
+}
+
+// FirstTimeCongratsPopup - Shows congratulations popup for first-time users
+struct FirstTimeCongratsPopup: View {
+    @Binding var isPresented: Bool
+    let onDismiss: () -> Void
+    @State private var confettiTrigger = 0
+    
+    var body: some View {
+        ZStack {
+            // Background overlay
+            Color.black.opacity(0.4)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    dismissPopup()
+                }
+            
+            // Popup content
+            VStack(spacing: 20) {
+                // Celebration emoji
+                Text("🎉")
+                    .font(.system(size: 60))
+                    .scaleEffect(isPresented ? 1.2 : 1.0)
+                    .animation(.spring(response: 0.6, dampingFraction: 0.8), value: isPresented)
+                
+                // Title
+                Text("Congrats on your 1-day streak!")
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundColor(.black)
+                    .multilineTextAlignment(.center)
+                
+                // Description
+                Text("You've unlocked the Thrifty Map — your new shortcut to finding stores faster so you can profit with ease.")
+                    .font(.system(size: 16))
+                    .foregroundColor(.black.opacity(0.8))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(nil)
+                
+                // Thanks button
+                Button(action: {
+                    dismissPopup()
+                }) {
+                    Text("Thanks!")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(Color.black)
+                        .cornerRadius(25)
+                }
+                .padding(.top, 10)
+            }
+            .padding(30)
+            .background(Color.white)
+            .cornerRadius(20)
+            .shadow(color: .black.opacity(0.2), radius: 20, x: 0, y: 10)
+            .padding(.horizontal, 40)
+            .scaleEffect(isPresented ? 1.0 : 0.8)
+            .opacity(isPresented ? 1.0 : 0.0)
+            .animation(.spring(response: 0.6, dampingFraction: 0.8), value: isPresented)
+        }
+        .confettiCannon(trigger: $confettiTrigger, num: 20, confettiSize: 6, fadesOut: true, openingAngle: Angle(degrees: 0), closingAngle: Angle(degrees: 360), radius: 80)
+        .onAppear {
+            // Start confetti animation shortly after popup appears
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                confettiTrigger += 1
+            }
+        }
+        .onChange(of: isPresented) { presented in
+            if presented {
+                // Start confetti when popup is presented
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    confettiTrigger += 1
+                }
+            }
+        }
+    }
+    
+    private func dismissPopup() {
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+            isPresented = false
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            onDismiss()
+        }
+    }
+}
+
 // Onboarding View for logged-in users who haven't completed onboarding
 struct OnboardingView: View {
     @StateObject private var authManager = AuthenticationManager.shared
+    @StateObject private var coordinator = OnboardingCoordinator()
     @State private var showingOnboarding = false
     
     var body: some View {
         NavigationView {
-            OnboardingGenderView()
+            SongFrequencyView()
                 .horizontalSlideTransition()
+                .onAppear {
+                    // Start tracking when onboarding begins
+                    coordinator.startOnboarding()
+                }
                 .onDisappear {
+                    // Track dropoff if user exits onboarding early
+                    if !authManager.hasCompletedSubscription {
+                        coordinator.trackDropoff()
+                    }
                     // When onboarding is dismissed, mark it as completed
                     authManager.markOnboardingCompleted()
                 }
@@ -5219,6 +7314,7 @@ struct OnboardingView: View {
 // Loading View with realistic progress animation
 struct LoadingView: View {
     @Environment(\.dismiss) var dismiss
+    @StateObject private var coordinator = OnboardingCoordinator()
     @State private var progress: CGFloat = 0.0
     @State private var progressText = "0%"
     @State private var statusText = "Initializing your profile..."
@@ -5227,11 +7323,11 @@ struct LoadingView: View {
     @State private var navigateToFinal = false
     
     let checklistItems = [
-        "Writing style analysis",
-        "Rhyme schemes", 
-        "Verse structure",
-        "Creative themes",
-        "Custom plan generation"
+        "Thrifting style analysis",
+        "Item valuation patterns", 
+        "Shopping preferences",
+        "Deal optimization",
+        "Custom thrift profile"
     ]
     
     var body: some View {
@@ -5341,6 +7437,8 @@ struct LoadingView: View {
         .navigationBarHidden(true)
         .preferredColorScheme(.light)
         .onAppear {
+            coordinator.currentStep = 17
+            MixpanelService.shared.trackQuestionViewed(questionTitle: "Setting up your profile...", stepNumber: 17)
             startLoadingSequence()
         }
         .background(
@@ -5368,11 +7466,11 @@ struct LoadingView: View {
     private func countUp() {
         var currentCount = 0
         let freezePoints: [Int: (String, Int)] = [
-            18: ("Analyzing your writing style...", 0),
-            34: ("Processing rhyme schemes...", 1), 
-            56: ("Analyzing verse structure...", 2),
-            78: ("Optimizing creative themes...", 3),
-            92: ("Finalizing your custom plan...", 4)
+            18: ("Analyzing your thrifting style...", 0),
+            34: ("Processing item valuation patterns...", 1), 
+            56: ("Analyzing shopping preferences...", 2),
+            78: ("Optimizing deal optimization...", 3),
+            92: ("Finalizing your custom thrift profile...", 4)
         ]
         
         Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { timer in
@@ -5470,6 +7568,7 @@ struct LoadingView: View {
 // Final congratulations view with confetti
 struct FinalCongratulationsView: View {
     @Environment(\.dismiss) var dismiss
+    @StateObject private var coordinator = OnboardingCoordinator()
     @State private var showContent = false
     @State private var showConfetti = false
     @State private var navigateToSummary = false
@@ -5566,6 +7665,8 @@ struct FinalCongratulationsView: View {
         }
         .navigationBarHidden(true)
         .onAppear {
+            coordinator.currentStep = 18
+            MixpanelService.shared.trackQuestionViewed(questionTitle: "Final Congratulations", stepNumber: 18)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 showContent = true
                 showConfetti = true
@@ -5577,6 +7678,7 @@ struct FinalCongratulationsView: View {
 // Custom Plan Summary View
 struct CustomPlanSummaryView: View {
     @Environment(\.dismiss) var dismiss
+    @StateObject private var coordinator = OnboardingCoordinator()
     @State private var showContent = false
     @State private var navigateToSubscription = false
     
@@ -5636,22 +7738,7 @@ struct CustomPlanSummaryView: View {
                     }
                     .padding(.top, 12)
                     
-                    Spacer(minLength: 8)
-                    
-                    // Goal section
-                    VStack(spacing: 12) {
-                        Text("You should achieve:")
-                            .font(.system(size: 16, weight: .medium))
-                            .opacity(showContent ? 1 : 0)
-                            .animation(.easeOut(duration: 0.6).delay(0.8), value: showContent)
-                        
-                        Text("12 complete songs by \(targetDate)")
-                            .font(.system(size: 20, weight: .bold))
-                            .opacity(showContent ? 1 : 0)
-                            .animation(.easeOut(duration: 0.6).delay(1.0), value: showContent)
-                    }
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 8)
+                    Spacer(minLength: 4)
                     
                     // Stats rings
                     VStack(spacing: 12) {
@@ -5661,38 +7748,38 @@ struct CustomPlanSummaryView: View {
                             GridItem(.flexible())
                         ], spacing: 12) {
                             
-                            // Boost in creativity
+                            // Boost in clarity
                             RecommendationCircle(
-                                icon: "brain.head.profile",
-                                title: "Boost In Creativity",
+                                icon: "eye.fill",
+                                title: "Boost in clarity",
                                 value: "79%",
                                 color: Color.purple,
                                 delay: 1.2
                             )
                             
-                            // Writer's block destroyed
+                            // Boost in savings
                             RecommendationCircle(
-                                icon: "shield.fill",
-                                title: "Writer's Block Destroyed",
-                                value: "98%",
+                                icon: "dollarsign.circle.fill",
+                                title: "Boost in savings",
+                                value: "71%",
                                 color: Color.green,
                                 delay: 1.4
                             )
                             
-                            // Words Written
+                            // Time saved per day
                             RecommendationCircle(
-                                icon: "doc.text.fill",
-                                title: "Words Written",
-                                value: "744",
+                                icon: "clock.fill",
+                                title: "Time saved per day",
+                                value: "2.5h",
                                 color: Color.blue,
                                 delay: 1.6
                             )
                             
-                            // Hours saved
+                            // Boost in enjoyment
                             RecommendationCircle(
-                                icon: "clock.fill",
-                                title: "Hours Saved",
-                                value: "8",
+                                icon: "heart.fill",
+                                title: "Boost in enjoyment",
+                                value: "85%",
                                 color: Color.orange,
                                 delay: 1.8
                             )
@@ -5708,7 +7795,7 @@ struct CustomPlanSummaryView: View {
                             .font(.system(size: 18, weight: .semibold))
                             .frame(maxWidth: .infinity, alignment: .leading)
                         
-                        Text("Based on your profile, you'll see significant improvement in lyric quality and writing speed within the next 3 days.")
+                        Text("Based on your profile, you'll see significant improvement in thrift success and value-finding within the next 3 days.")
                             .font(.system(size: 14))
                             .foregroundColor(.gray)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -5748,6 +7835,8 @@ struct CustomPlanSummaryView: View {
         .navigationBarHidden(true)
         .preferredColorScheme(.light)
         .onAppear {
+            coordinator.currentStep = 19
+            MixpanelService.shared.trackQuestionViewed(questionTitle: "Plan Summary", stepNumber: 19)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 showContent = true
             }
@@ -5806,6 +7895,90 @@ struct RecommendationCircle: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 showCircle = true
             }
+        }
+    }
+}
+
+// Simple and reliable video player for main.mp4
+struct MainVideoPlayer: UIViewRepresentable {
+    let videoName: String
+    
+    func makeUIView(context: Context) -> UIView {
+        let containerView = UIView()
+        containerView.backgroundColor = UIColor.white
+        
+        // Try to find video in main bundle
+        var videoURL: URL?
+        
+        if let url = Bundle.main.url(forResource: videoName, withExtension: "mp4") {
+            print("✅ Found video in main bundle: \(url)")
+            videoURL = url
+        } else if let path = Bundle.main.path(forResource: videoName, ofType: "mp4") {
+            videoURL = URL(fileURLWithPath: path)
+            print("✅ Found video at path: \(path)")
+        } else {
+            print("❌ \(videoName).mp4 not found in project bundle")
+            return containerView
+        }
+        
+        guard let url = videoURL else { return containerView }
+        
+        // Create AVPlayer and AVPlayerLayer
+        let player = AVPlayer(url: url)
+        player.isMuted = true
+        
+        let playerLayer = AVPlayerLayer(player: player)
+        playerLayer.videoGravity = .resizeAspect // Maintain aspect ratio without cropping
+        playerLayer.backgroundColor = UIColor.white.cgColor
+        
+        // Add player layer to container
+        containerView.layer.addSublayer(playerLayer)
+        
+        // Set initial frame - important for immediate visibility
+        playerLayer.frame = CGRect(x: 0, y: 0, width: 100, height: 100) // Temporary size
+        
+        // Store references for later access
+        containerView.layer.setValue(player, forKey: "player")
+        containerView.layer.setValue(playerLayer, forKey: "playerLayer")
+        
+        // Update frame after a short delay when container has proper bounds
+        DispatchQueue.main.async {
+            if containerView.bounds != .zero {
+                playerLayer.frame = containerView.bounds
+                print("🔧 Set initial player layer frame to: \(containerView.bounds)")
+            }
+        }
+        
+        // Start playing
+                        player.play()
+        print("🎬 MainVideoPlayer started playing: \(videoName)")
+        
+        // Set up looping
+        NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: player.currentItem,
+            queue: .main
+        ) { _ in
+                            print("🔄 Video ended, looping...")
+                            player.seek(to: .zero)
+                            player.play()
+                        }
+        
+        return containerView
+    }
+    
+    func updateUIView(_ uiView: UIView, context: Context) {
+        print("🔄 updateUIView called with bounds: \(uiView.bounds)")
+        
+        if let playerLayer = uiView.layer.value(forKey: "playerLayer") as? AVPlayerLayer {
+            // Always update the frame, even if bounds are the same
+            playerLayer.frame = uiView.bounds
+            print("🔧 Updated player layer frame to: \(uiView.bounds)")
+            
+            // Force a redraw
+            playerLayer.setNeedsDisplay()
+        } else {
+            print("❌ Could not find playerLayer in updateUIView")
         }
     }
 }
@@ -5939,7 +8112,7 @@ struct SpinnerView: View {
                             )
                     )
                     .overlay(
-                        Text("🎵")
+                        Text("🛒")
                             .font(.system(size: 32))
                     )
                     .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
@@ -6088,6 +8261,7 @@ struct WinbackView: View {
     @State private var showOneTimeOffer = false
     @State private var spinnerCompleted = false
     let storeManager: StoreManager // Add this parameter
+    @StateObject private var remoteConfig = RemoteConfigManager.shared
     
     var body: some View {
         ZStack {
@@ -6124,19 +8298,33 @@ struct WinbackView: View {
                     
                     Spacer()
                     
-                    // Centered Spinner
+                    // Centered Spinner (only show in hard paywall mode)
+                    if remoteConfig.hardPaywall {
                     SpinnerView()
+                    }
                     
                     Spacer()
                 }
                 .padding(.horizontal, 20)
                 .onAppear {
+                    if remoteConfig.hardPaywall {
                     // Show one time offer after spinner completes (0.8s delay + 3.5s animation = 4.3s total)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 4.3) {
                         if !spinnerCompleted {
                             spinnerCompleted = true
                             withAnimation(.easeInOut(duration: 0.5)) {
                                 showOneTimeOffer = true
+                                }
+                            }
+                        }
+                    } else {
+                        // Soft paywall mode - show offer immediately without spinner
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            if !spinnerCompleted {
+                                spinnerCompleted = true
+                                withAnimation(.easeInOut(duration: 0.5)) {
+                                    showOneTimeOffer = true
+                                }
                             }
                         }
                     }
@@ -6178,10 +8366,14 @@ struct TimelineItem: View {
                 Text(title)
                     .font(.system(size: 18, weight: .bold))
                     .foregroundColor(.black)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(description)
                     .font(.system(size: 14))
                     .foregroundColor(.black.opacity(0.7))
                     .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, 20)
@@ -6225,6 +8417,7 @@ struct TryForFreeView: View {
     @Environment(\.dismiss) var dismiss
     @State private var showContent = false
     @State private var navigateToSubscription = false
+    @StateObject private var remoteConfig = RemoteConfigManager.shared
     
     var body: some View {
         VStack(spacing: 0) {
@@ -6238,7 +8431,7 @@ struct TryForFreeView: View {
             // Main content
             VStack(spacing: 0) {
                 // Title
-                Text("We want you to try\nThrifty for free")
+                Text(remoteConfig.hardPaywall ? "We want you to try\nThrifty for free" : "We want you to try\nThrifty")
                     .font(.system(size: 28, weight: .bold))
                     .multilineTextAlignment(.center)
                     .foregroundColor(.black)
@@ -6248,21 +8441,19 @@ struct TryForFreeView: View {
                     .opacity(showContent ? 1 : 0)
                     .animation(.easeOut(duration: 0.6).delay(0.3), value: showContent)
                 
-                // Main Image
-                Image("main")
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
+                // Main Video
+                MainVideoPlayer(videoName: "main")
                     .frame(maxWidth: .infinity)
                     .clipped()
                     .padding(.bottom, 30)
-                    .padding(.horizontal, -24)
                     .opacity(showContent ? 1 : 0)
                     .animation(.easeOut(duration: 0.6).delay(0.6), value: showContent)
             }
             
             // Bottom section with button and payment text
             VStack(spacing: 16) {
-                // No payment due now
+                // Payment info (conditional based on paywall mode)
+                if remoteConfig.hardPaywall {
                 HStack(spacing: 12) {
                     Image(systemName: "checkmark")
                         .font(.system(size: 16, weight: .bold))
@@ -6274,28 +8465,33 @@ struct TryForFreeView: View {
                 }
                 .opacity(showContent ? 1 : 0)
                 .animation(.easeOut(duration: 0.6).delay(1.0), value: showContent)
+                }
                 
-                // Try for $0.00 button
+                // Try button (conditional text based on paywall mode)
                 NavigationLink(isActive: $navigateToSubscription) {
                     SubscriptionView()
                 } label: {
-                    Text("Try for $0.00")
+                    Text(remoteConfig.hardPaywall ? "Try for $0.00" : "Try Thrifty")
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
                         .frame(height: 56)
                         .background(Color.black)
-                        .cornerRadius(12)
+                        .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
                 }
                 .opacity(showContent ? 1 : 0)
                 .animation(.easeOut(duration: 0.6).delay(1.2), value: showContent)
                 
-                // Legal text
-                Text("Just $29.99 per year ($2.50/mo)")
+                // Legal text (conditional based on paywall mode)
+                if !remoteConfig.hardPaywall {
+                Text("Just $6 per month (billed annually)")
                     .font(.system(size: 14))
                     .foregroundColor(.gray)
                     .opacity(showContent ? 1 : 0)
                     .animation(.easeOut(duration: 0.6).delay(1.4), value: showContent)
+                }
             }
             .padding(.bottom, 32)
         }
@@ -6304,6 +8500,9 @@ struct TryForFreeView: View {
         .navigationBarHidden(true)
         .onAppear {
             showContent = true
+            // Track winback subscription view
+            MixpanelService.shared.trackSubscriptionViewed(planType: "winback_offer")
+            // FacebookPixelService.shared.trackSubscriptionViewed(planType: "winback_offer")
         }
     }
 }
@@ -6311,6 +8510,7 @@ struct TryForFreeView: View {
 // Update SubscriptionView to use new WinbackView
 struct SubscriptionView: View {
     @Environment(\.dismiss) var dismiss
+    @StateObject private var coordinator = OnboardingCoordinator()
     @StateObject private var storeManager = StoreManager()
     @StateObject private var authManager = AuthenticationManager.shared
     @StateObject private var remoteConfig = RemoteConfigManager.shared
@@ -6321,10 +8521,12 @@ struct SubscriptionView: View {
     @State private var navigateToCreateAccount = false
     @State private var currentStep = 1 // 1 = bell reminder, 2 = subscription details
     @State private var bellAnimating = false
+    @State private var showingPrivacyPolicy = false
+    @State private var isPurchasing = false // Loading state for purchase button
     
     var body: some View {
         VStack(spacing: 0) {
-            // Header with restore button
+            // Header with restore button - add safe area padding to prevent cropping
             HStack {
                 Spacer()
                 Button(action: {
@@ -6343,10 +8545,10 @@ struct SubscriptionView: View {
                 }
             }
             .padding(.horizontal, 24)
-            .padding(.top, 16)
+            .padding(.top, 20) // Increased from 16 to 20 to prevent cropping
             
             // Main content
-            VStack(spacing: 40) {
+            VStack(spacing: 20) {
                 if currentStep == 1 {
                     // Step 1: Bell reminder screen
                     VStack(spacing: 0) {
@@ -6417,13 +8619,16 @@ struct SubscriptionView: View {
                 } else {
                     // Step 2: Subscription details screen
                     VStack(spacing: 0) {
-                                                // Title - positioned higher
-                        Text("Start your 3-days FREE trial to continue.")
+                                                // Title - positioned higher (conditional based on paywall mode)
+                        Text(remoteConfig.hardPaywall ? "Start your 3-days FREE trial to continue." : "Subscribe to Thrifty Unlimited")
                             .font(.system(size: 28, weight: .bold))
                             .multilineTextAlignment(.center)
                             .foregroundColor(.black)
+                            .lineLimit(nil) // Allow unlimited lines to prevent truncation
+                            .fixedSize(horizontal: false, vertical: true) // Allow vertical expansion
                             .padding(.top, 20)
                             .padding(.bottom, 30)
+                            .padding(.horizontal, 24) // Add horizontal padding to ensure proper spacing
                             .opacity(showContent ? 1 : 0)
                             .animation(.easeOut(duration: 0.6).delay(0.3), value: showContent)
                         
@@ -6438,7 +8643,7 @@ struct SubscriptionView: View {
                                 icon: "lock.fill",
                                 iconColor: .green,
                                 title: "Today",
-                                description: "Unlock all the app's features and speed up your Career, Lyrics, and Visibility.",
+                                description: "Unlock all the app's features and thrift faster, save more, and score hidden gems daily.",
                                 isLast: false,
                                 showContent: showContent,
                                 lineColor: .green,
@@ -6487,7 +8692,7 @@ struct SubscriptionView: View {
                 }
                 
                 // Bottom section with button and payment text
-                VStack(spacing: 16) {
+                VStack(spacing: 12) {
                     if currentStep == 1 {
                         // Step 1: No payment due now text
                         HStack(spacing: 12) {
@@ -6502,31 +8707,44 @@ struct SubscriptionView: View {
                         .opacity(showContent ? 1 : 0)
                         .animation(.easeOut(duration: 0.6).delay(1.0), value: showContent)
                         
-                        // Step 1: Try For $0.00 button
+                        // Step 1: Try button (conditional text based on paywall mode)
                         Button(action: {
                             withAnimation(.easeInOut(duration: 0.3)) {
                                 currentStep = 2
                             }
                         }) {
-                            Text("Try For $0.00")
+                            Text(remoteConfig.hardPaywall ? "Try For $0.00" : "Try Thrifty")
                                 .font(.system(size: 17, weight: .semibold))
                                 .foregroundColor(.white)
                                 .frame(maxWidth: .infinity)
                                 .frame(height: 56)
                                 .background(Color.black)
-                                .cornerRadius(12)
+                                .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
                         }
+                        .padding(.horizontal, 24)
                         .opacity(showContent ? 1 : 0)
                         .animation(.easeOut(duration: 0.6).delay(1.2), value: showContent)
                         
-                        // Step 1: Legal text
-                        Text("3 days free, then $29.99 per year ($2.50/mo)")
+                        // Step 1: Legal text (conditional based on paywall mode)
+                        if !remoteConfig.hardPaywall {
+                            Text("Yearly subscription")
                             .font(.system(size: 14))
                             .foregroundColor(.gray)
                             .opacity(showContent ? 1 : 0)
                             .animation(.easeOut(duration: 0.6).delay(1.4), value: showContent)
+                        }
+                        
+                        // No commitment text for Step 1
+                        Text("No commitment, cancel anytime.")
+                            .font(.system(size: 14))
+                            .foregroundColor(.gray)
+                            .opacity(showContent ? 1 : 0)
+                            .animation(.easeOut(duration: 0.6).delay(1.6), value: showContent)
                     } else {
-                        // Step 2: No payment due now text
+                        // Step 2: Payment info (conditional based on paywall mode)
+                        if remoteConfig.hardPaywall {
                             HStack(spacing: 12) {
                                 Image(systemName: "checkmark")
                                     .font(.system(size: 16, weight: .bold))
@@ -6538,38 +8756,66 @@ struct SubscriptionView: View {
                             }
                             .opacity(showContent ? 1 : 0)
                             .animation(.easeOut(duration: 0.6).delay(1.0), value: showContent)
+                        }
                             
                         // Step 2: Purchase button - same position as step 1 button
                             Button(action: {
+                                // Prevent multiple taps
+                                guard !isPurchasing else { return }
+                                
                                 Task {
+                                    // Set loading state
+                                    isPurchasing = true
+                                    
                                     do {
-                                        print("🔍 Attempting to purchase regular $29.99 subscription...")
+                                        // Track subscription attempt
+                                        MixpanelService.shared.trackSubscriptionViewed(planType: "yearly")
+                                        // FacebookPixelService.shared.trackSubscriptionViewed(planType: "yearly")
+                                        
+                                        print("🔍 Attempting to purchase yearly subscription...")
                                         print("📦 Available products: \(storeManager.subscriptions.count)")
                                         for product in storeManager.subscriptions {
                                             print("   - \(product.id): \(product.displayPrice)")
                                         }
+                                        print("🎯 Looking for yearly subscription product...")
                                         
-                                        // Find the $29.99 regular subscription product
+                                        // Find the yearly subscription product (try new ID first, then fallback)
                                         guard let subscription = storeManager.subscriptions.first(where: { 
+                                            $0.id == "com.thrifty.thrifty.unlimited.yearly79" || 
                                             $0.id == "com.thrifty.thrifty.unlimited.yearly" 
                                         }) else {
-                                            print("❌ Regular subscription product not found")
-                                            errorMessage = "Regular subscription product not available"
+                                            print("❌ Yearly subscription product not found")
+                                            errorMessage = "Yearly subscription product not available"
                                             showError = true
+                                            isPurchasing = false // Reset loading state
                                             return
                                         }
                                         
+                                        print("✅ Found yearly subscription: \(subscription.id) - \(subscription.displayPrice)")
                                         let result = try await subscription.purchase()
                                         
                                         switch result {
                                         case .success(let verification):
                                             switch verification {
                                             case .verified(let transaction):
-                                                print("✅ Successfully purchased $29.99 subscription: \(transaction.productID)")
+                                                print("✅ Successfully purchased yearly subscription: \(transaction.productID)")
+                                                
+                                                // Track successful subscription purchase
+                                                MixpanelService.shared.trackSubscriptionPurchased(planType: "yearly", price: Double(truncating: subscription.price as NSNumber))
+                                                
+                                                // Schedule delayed tracking (1 hour validation) - Facebook + SKAdNetwork
+                                                DelayedTrackingService.shared.scheduleDelayedTrialEvent(
+                                                    planType: "yearly", 
+                                                    price: Double(truncating: subscription.price as NSNumber),
+                                                    transactionId: String(transaction.originalID),
+                                                    skAdNetworkValue: 32
+                                                )
+                                                
                                                 // Successful purchase - mark subscription as completed
                                                 await transaction.finish()
                                                 await storeManager.updateSubscriptionStatus()
                                                 authManager.markSubscriptionCompleted()
+                                                isPurchasing = false // Reset loading state
                                                 navigateToCreateAccount = true
                                             case .unverified:
                                                 throw StoreError.failedVerification
@@ -6577,70 +8823,134 @@ struct SubscriptionView: View {
                                         case .pending:
                                             throw StoreError.pending
                                                                 case .userCancelled:
-                            if remoteConfig.hardPaywall {
+                            // Show winback for both hard and soft paywall modes
+                            // The difference is only in the wheel animation (handled in WinbackView)
                                 showWinback = true
-                            } else {
-                                // Soft paywall - automatically redirect to main app
-                                authManager.markSubscriptionCompleted()
-                                authManager.setGuestMode() // Auto-login for soft paywall
-                            }
+                                isPurchasing = false // Reset loading state
                                         @unknown default:
+                                            isPurchasing = false // Reset loading state
                                             throw StoreError.unknown
                                         }
                                                         } catch StoreError.userCancelled {
-                        if remoteConfig.hardPaywall {
+                        // Show winback for both hard and soft paywall modes
+                        // The difference is only in the wheel animation (handled in WinbackView)
                             showWinback = true
-                        } else {
-                            // Soft paywall - automatically redirect to main app
-                            authManager.markSubscriptionCompleted()
-                            authManager.setGuestMode() // Auto-login for soft paywall
-                        }
+                            isPurchasing = false // Reset loading state
                                     } catch StoreError.pending {
                                         errorMessage = "Purchase is pending"
                                         showError = true
+                                        isPurchasing = false // Reset loading state
                                     } catch {
                                         errorMessage = "Failed to make purchase"
                                         showError = true
+                                        isPurchasing = false // Reset loading state
                                     }
                                 }
                             }) {
-                                Text("Start my 3-Day Free Trial")
+                                HStack(spacing: 8) {
+                                    if isPurchasing {
+                                        ProgressView()
+                                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                            .scaleEffect(0.8)
+                                    }
+                                    
+                                    Text(isPurchasing ? "Processing..." : "Start my 3-Day Free Trial")
                                     .font(.system(size: 17, weight: .semibold))
                                     .foregroundColor(.white)
+                                }
                                     .frame(maxWidth: .infinity)
                                     .frame(height: 56)
-                                    .background(Color.black)
-                                    .cornerRadius(12)
+                                .background(isPurchasing ? Color.gray : Color.black)
+                                    .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
                             }
+                            .disabled(isPurchasing)
+                            .padding(.horizontal, 24)
                             .opacity(showContent ? 1 : 0)
                             .animation(.easeOut(duration: 0.6).delay(1.2), value: showContent)
+                            
+                            // Add pricing text under the button (always show)
+                            Text("Just $6 per month (billed annually)")
+                                .font(.system(size: 14))
+                                .foregroundColor(.gray)
+                                .opacity(showContent ? 1 : 0)
+                                .animation(.easeOut(duration: 0.6).delay(1.4), value: showContent)
                     }
                     
                     if currentStep == 2 {
-                        // Legal text for step 2
-                        Text("3 days free, then $29.99 per year ($2.50/mo)")
+                        // Legal text for step 2 (conditional based on paywall mode)
+                        if !remoteConfig.hardPaywall {
+                            Text("Yearly subscription")
                             .font(.system(size: 14))
                             .foregroundColor(.gray)
                             .opacity(showContent ? 1 : 0)
                             .animation(.easeOut(duration: 0.6).delay(1.4), value: showContent)
+                        }
+                        
+                        // Terms & Privacy links for soft paywall compliance
+                        if !remoteConfig.hardPaywall {
+                            TermsAndPrivacyText(showingPrivacyPolicy: $showingPrivacyPolicy)
+                                .padding(.top, 16)
+                                .opacity(showContent ? 1 : 0)
+                                .animation(.easeOut(duration: 0.6).delay(1.6), value: showContent)
+                            
+                            // Restore Purchases Button (required by Apple)
+                            Button(action: {
+                                Task {
+                                    do {
+                                        try await AppStore.sync()
+                                        print("✅ Purchases restored successfully")
+                                    } catch {
+                                        print("❌ Failed to restore purchases: \(error)")
+                                        errorMessage = "Failed to restore purchases"
+                                        showError = true
+                                    }
+                                }
+                            }) {
+                                Text("Restore Purchases")
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundColor(.blue)
+                                    .underline()
+                            }
+                            .padding(.top, 12)
+                            .opacity(showContent ? 1 : 0)
+                            .animation(.easeOut(duration: 0.6).delay(1.8), value: showContent)
+                        }
                     }
                 }
-                .padding(.bottom, 32)
+                .padding(.bottom, 40)
             }
-            .padding(.horizontal, 24)
         }
         .background(Color.white)
         .navigationBarHidden(true)
         .preferredColorScheme(.light)
+        .edgesIgnoringSafeArea(.bottom) // Only ignore bottom safe area, keep top safe area for proper restore button positioning
         .onAppear {
+            coordinator.currentStep = 20
+            MixpanelService.shared.trackQuestionViewed(questionTitle: "Subscription", stepNumber: 20)
+            // FacebookPixelService.shared.trackOnboardingStepViewed(questionTitle: "Subscription", stepNumber: 20)
+            // Track subscription view appearance
+            MixpanelService.shared.trackSubscriptionViewed(planType: "yearly_subscription_page")
+            // FacebookPixelService.shared.trackSubscriptionViewed(planType: "yearly_subscription_page")
+            
+            // Set paywall screen state to true when user reaches subscription screen
+            authManager.setPaywallScreenState(true)
+            
             showContent = true
             // Load products when view appears
             Task {
                 await storeManager.loadProducts()
             }
             
-            // Note: When hardpaywall is false, still show the paywall normally
-            // Only redirect to main app if user cancels the $29.99 purchase
+                    // Note: Both hard and soft paywall modes show winback when user cancels
+        // The difference is only in the wheel animation and pricing transparency
+        }
+        .onDisappear {
+            // Clear paywall state when user leaves subscription screen by going back
+            if !authManager.hasCompletedSubscription {
+                authManager.setPaywallScreenState(false)
+            }
         }
         .alert("Error", isPresented: $showError) {
             Button("OK", role: .cancel) {}
@@ -6648,12 +8958,7 @@ struct SubscriptionView: View {
             Text(errorMessage)
         }
         .fullScreenCover(isPresented: $showWinback) {
-            if remoteConfig.hardPaywall {
                 WinbackView(isPresented: $showWinback, storeManager: storeManager)
-            } else {
-                // Soft paywall - show empty view since we auto-redirect
-                EmptyView()
-            }
         }
         .background(
             NavigationLink(isActive: $navigateToCreateAccount) {
@@ -6663,6 +8968,11 @@ struct SubscriptionView: View {
             }
             .hidden()
         )
+        .sheet(isPresented: $showingPrivacyPolicy) {
+            PrivacyPolicyView()
+                .presentationDetents([.height(UIScreen.main.bounds.height * 0.8)])
+                .presentationDragIndicator(.visible)
+        }
 
     }
 }
@@ -6672,6 +8982,7 @@ struct OneTimeOfferView: View {
     @Binding var parentPresented: Bool
     let storeManager: StoreManager // Accept StoreManager instance as a parameter
     @StateObject private var authManager = AuthenticationManager.shared
+    @StateObject private var remoteConfig = RemoteConfigManager.shared
     @State private var isPurchasing = false
     @State private var showError = false
     @State private var errorMessage = ""
@@ -6733,7 +9044,7 @@ struct OneTimeOfferView: View {
                     
                     // Main offer box (with shadow and white border)
                     VStack(spacing: 12) {
-                        Text("80% OFF")
+                        Text("50% OFF")
                             .font(.system(size: 48, weight: .bold))
                             .foregroundColor(.white)
                         Text("FOREVER")
@@ -6754,13 +9065,10 @@ struct OneTimeOfferView: View {
                 
                 // Pricing
                 HStack(spacing: 8) {
-                    Text("$29.99")
+                    Text("$79.00")
                         .font(.system(size: 24, weight: .bold))
                         .foregroundColor(.black)
                         .strikethrough()
-                    Text("$1.66 /month")
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundColor(.black)
                 }
                 
                 // Warning text with black triangle and exclamation mark
@@ -6780,7 +9088,8 @@ struct OneTimeOfferView: View {
                 }
                 .padding(.horizontal, 24)
                 
-                // Combined LOWEST PRICE EVER with yearly plan box
+                // Combined LOWEST PRICE EVER with yearly plan box - only show when NOT hardPaywall
+                if !remoteConfig.hardPaywall {
                 VStack(spacing: 0) {
                     // LOWEST PRICE EVER header
                     Text("LOWEST PRICE EVER")
@@ -6794,15 +9103,15 @@ struct OneTimeOfferView: View {
                     // Yearly plan box (seamlessly connected to header with no top corners)
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Yearly")
+                            Text("Monthly")
                                 .font(.system(size: 18, weight: .semibold))
                                 .foregroundColor(.black)
-                            Text("12mo • $19.99")
+                            Text("Winback Offer • $39.00")
                                 .font(.system(size: 14))
                                 .foregroundColor(.gray)
                         }
                         Spacer()
-                        Text("$1.66 /mo")
+                        Text("$39.00 /year")
                             .font(.system(size: 18, weight: .bold))
                             .foregroundColor(.black)
                     }
@@ -6818,29 +9127,35 @@ struct OneTimeOfferView: View {
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 16) // Move closer to button
+                }
                 
                 // CLAIM YOUR ONE TIME OFFER button
                 Button(action: {
+                    // Prevent multiple taps
+                    guard !isPurchasing else { return }
+                    
                     Task {
                         await purchaseSubscription()
                     }
                 }) {
-                    HStack {
-                        if storeManager.subscriptions.isEmpty {
+                    HStack(spacing: 8) {
+                        if storeManager.subscriptions.isEmpty || isPurchasing {
                             ProgressView()
                                 .progressViewStyle(CircularProgressViewStyle(tint: .white))
                                 .scaleEffect(0.8)
                         }
-                        Text(storeManager.subscriptions.isEmpty ? "Loading..." : "CLAIM YOUR ONE TIME OFFER")
+                        
+                        Text(isPurchasing ? "Processing..." : 
+                             storeManager.subscriptions.isEmpty ? "Loading..." : "CLAIM YOUR ONE TIME OFFER")
                             .font(.system(size: 16, weight: .bold))
                             .foregroundColor(.white)
                     }
                     .frame(maxWidth: .infinity)
                     .frame(height: 56)
-                    .background(storeManager.subscriptions.isEmpty ? Color.gray : Color.black)
+                    .background((storeManager.subscriptions.isEmpty || isPurchasing) ? Color.gray : Color.black)
                     .cornerRadius(28)
                 }
-                .disabled(storeManager.subscriptions.isEmpty)
+                .disabled(storeManager.subscriptions.isEmpty || isPurchasing)
                 .padding(.horizontal, 24)
                 .padding(.top, 24) // Reduced spacing from top elements
                 
@@ -6881,17 +9196,18 @@ struct OneTimeOfferView: View {
         }
         
         do {
-            // Find the special $19.99 product for one-time offer
+            // Find the winback product for one-time offer (try new ID first, then fallback)
             guard let specialSubscription = storeManager.subscriptions.first(where: { 
-                $0.id == "com.thrifty.thrifty.unlimited.yearly.special" 
+                $0.id == "com.thrifty.thrifty.unlimited.yearly.winback39" ||
+                $0.id == "com.thrifty.thrifty.unlimited.monthly.winback" 
             }) else {
-                print("❌ Special $19.99 offer product not found in available products")
-                print("🔍 Looking for: com.thrifty.thrifty.unlimited.yearly.special")
+                print("❌ Winback offer product not found in available products")
+                print("🔍 Looking for: com.thrifty.thrifty.unlimited.yearly.winback39 or com.thrifty.thrifty.unlimited.monthly.winback")
                 print("📦 Available products:")
                 for product in storeManager.subscriptions {
                     print("   - \(product.id)")
                 }
-                errorMessage = "Special $19.99 offer not available. Please try again or contact support."
+                errorMessage = "Winback $39.00 offer not available. Please try again or contact support."
                 showError = true
                 isPurchasing = false
                 return
@@ -6903,10 +9219,23 @@ struct OneTimeOfferView: View {
             case .success(let verification):
                 switch verification {
                 case .verified(let transaction):
-                    print("✅ Successfully purchased $19.99 special offer: \(transaction.productID)")
+                    print("✅ Successfully purchased $39.00 winback offer: \(transaction.productID)")
+                    
+                    // Track successful winback subscription purchase
+                    MixpanelService.shared.trackSubscriptionPurchased(planType: "winback_39.00", price: 39.00)
+                    
+                    // Schedule delayed tracking (1 hour validation) - Facebook + SKAdNetwork
+                    DelayedTrackingService.shared.scheduleDelayedPurchaseEvent(
+                        planType: "winback_39.00", 
+                        price: 39.00,
+                        transactionId: String(transaction.originalID),
+                        skAdNetworkValue: 63
+                    )
+                    
                     await transaction.finish()
                     await storeManager.updateSubscriptionStatus()
                     authManager.markSubscriptionCompleted()
+                    isPurchasing = false // Reset loading state
                     navigateToCreateAccount = true
                 case .unverified:
                     errorMessage = "Purchase verification failed"
@@ -7206,11 +9535,15 @@ class AuthenticationManager: NSObject, ObservableObject {
     @Published var errorMessage: String?
     @Published var hasCompletedOnboarding: Bool = false
     @Published var hasCompletedSubscription: Bool = false
+    @Published var isOnPaywallScreen: Bool = false
+    @Published var hasSeenFirstTimeCongratsPopup: Bool = false
     
     private let isLoggedInKey = "AuthenticationManager_IsLoggedIn"
     private let userDataKey = "AuthenticationManager_UserData"
     private let hasCompletedOnboardingKey = "AuthenticationManager_HasCompletedOnboarding"
     private let hasCompletedSubscriptionKey = "AuthenticationManager_HasCompletedSubscription"
+    private let isOnPaywallScreenKey = "AuthenticationManager_IsOnPaywallScreen"
+    private let hasSeenFirstTimeCongratsPopupKey = "AuthenticationManager_HasSeenFirstTimeCongratsPopup"
     private var currentNonce: String?
     
     private override init() {
@@ -7223,11 +9556,13 @@ class AuthenticationManager: NSObject, ObservableObject {
         errorMessage = nil
         hasCompletedOnboarding = false
         hasCompletedSubscription = false
+        isOnPaywallScreen = false
+        hasSeenFirstTimeCongratsPopup = false
         
         // Load saved authentication state
         loadAuthenticationState()
         
-        print("🔐 AuthenticationManager initialized - isLoggedIn: \(isLoggedIn), hasCompletedOnboarding: \(hasCompletedOnboarding), hasCompletedSubscription: \(hasCompletedSubscription)")
+        print("🔐 AuthenticationManager initialized - isLoggedIn: \(isLoggedIn), hasCompletedOnboarding: \(hasCompletedOnboarding), hasCompletedSubscription: \(hasCompletedSubscription), isOnPaywallScreen: \(isOnPaywallScreen)")
     }
     
     // Apple Sign In
@@ -7561,9 +9896,22 @@ class AuthenticationManager: NSObject, ObservableObject {
     
     func markSubscriptionCompleted() {
         hasCompletedSubscription = true
+        isOnPaywallScreen = false  // Clear paywall state when subscription is completed
         saveAuthenticationState()
         saveSubscriptionStatusToFirebase()
         print("✅ Subscription marked as completed")
+    }
+    
+    func setPaywallScreenState(_ isOnPaywall: Bool) {
+        isOnPaywallScreen = isOnPaywall
+        saveAuthenticationState()
+        print("💳 Paywall screen state set to: \(isOnPaywall)")
+    }
+    
+    func markFirstTimeCongratsPopupSeen() {
+        hasSeenFirstTimeCongratsPopup = true
+        saveAuthenticationState()
+        print("🎉 First time congrats popup marked as seen")
     }
     
     func setGuestMode() {
@@ -7628,10 +9976,10 @@ class AuthenticationManager: NSObject, ObservableObject {
                    let hasCompleted = data["hasCompletedSubscription"] as? Bool {
                     self?.hasCompletedSubscription = hasCompleted
                     self?.saveAuthenticationState()
-                    print("✅ Loaded subscription status from Firebase for email \(email): \(hasCompleted)")
+                    print("✅ Loaded subscription status from Firestore for email \(email): \(hasCompleted)")
                 } else {
                     // No subscription record found - user hasn't completed subscription
-                    print("📝 No subscription status found in Firebase for email: \(email) - defaulting to false")
+                    print("📝 No subscription status found in Firestore for email: \(email) - defaulting to false")
                     self?.hasCompletedSubscription = false
                     self?.saveAuthenticationState()
                 }
@@ -7648,6 +9996,10 @@ class AuthenticationManager: NSObject, ObservableObject {
             isLoggedIn = false
             isLoading = false
             errorMessage = nil
+            hasCompletedOnboarding = false
+            hasCompletedSubscription = false
+            isOnPaywallScreen = false  // Clear paywall state on sign out
+            hasSeenFirstTimeCongratsPopup = false  // Reset popup state on sign out
             saveAuthenticationState()
             print("🚪 User logged out - redirecting to sign in")
         } catch {
@@ -7659,6 +10011,8 @@ class AuthenticationManager: NSObject, ObservableObject {
         UserDefaults.standard.set(isLoggedIn, forKey: isLoggedInKey)
         UserDefaults.standard.set(hasCompletedOnboarding, forKey: hasCompletedOnboardingKey)
         UserDefaults.standard.set(hasCompletedSubscription, forKey: hasCompletedSubscriptionKey)
+        UserDefaults.standard.set(isOnPaywallScreen, forKey: isOnPaywallScreenKey)
+        UserDefaults.standard.set(hasSeenFirstTimeCongratsPopup, forKey: hasSeenFirstTimeCongratsPopupKey)
         
         if let userData = currentUser,
            let encoded = try? JSONEncoder().encode(userData) {
@@ -7673,6 +10027,8 @@ class AuthenticationManager: NSObject, ObservableObject {
         isLoggedIn = UserDefaults.standard.bool(forKey: isLoggedInKey)
         hasCompletedOnboarding = UserDefaults.standard.bool(forKey: hasCompletedOnboardingKey)
         hasCompletedSubscription = UserDefaults.standard.bool(forKey: hasCompletedSubscriptionKey)
+        isOnPaywallScreen = UserDefaults.standard.bool(forKey: isOnPaywallScreenKey)
+        hasSeenFirstTimeCongratsPopup = UserDefaults.standard.bool(forKey: hasSeenFirstTimeCongratsPopupKey)
         
         if let data = UserDefaults.standard.data(forKey: userDataKey),
            let userData = try? JSONDecoder().decode(UserData.self, from: data) {
@@ -7834,8 +10190,9 @@ extension AuthenticationManager: ASAuthorizationControllerPresentationContextPro
 class ProfileManager: ObservableObject {
     @Published var profilePicture: String = "tool-bg4"
     @Published var customProfileImage: UIImage?
-    @Published var userName: String = "@takeflight395"
+    @Published var userName: String = "@thriftuser438"
     @Published var totalWordsWritten: Int = 0
+    @Published var profitRefreshTrigger: Int = 0
     
     private let userNameKey = "ProfileManager_UserName"
     private let profilePictureKey = "ProfileManager_ProfilePicture"
@@ -7852,7 +10209,7 @@ class ProfileManager: ObservableObject {
         
         // Ensure username always starts with @
         if cleanedName.isEmpty {
-            userName = "@takeflight395"
+            userName = "@thriftuser438"
         } else {
             userName = "@" + cleanedName
         }
@@ -7878,6 +10235,31 @@ class ProfileManager: ObservableObject {
         return validWords.count
     }
     
+    func calculateTotalProfit(from songManager: SongManager) -> Double {
+        var totalProfit: Double = 0.0
+        
+        for song in songManager.songs {
+            // Get saved values for this song
+            let savedAvgPrice = UserDefaults.standard.double(forKey: "avgPrice_\(song.id)")
+            let savedSellPrice = UserDefaults.standard.double(forKey: "sellPrice_\(song.id)")
+            let savedProfitOverride = UserDefaults.standard.string(forKey: "profitOverride_\(song.id)") ?? ""
+            let savedUseCustomProfit = UserDefaults.standard.bool(forKey: "useCustomProfit_\(song.id)")
+            
+            // Calculate profit for this song
+            if savedUseCustomProfit && !savedProfitOverride.isEmpty {
+                totalProfit += Double(savedProfitOverride) ?? 0
+            } else if savedAvgPrice > 0 && savedSellPrice > 0 {
+                totalProfit += savedSellPrice - savedAvgPrice
+            }
+        }
+        
+        return totalProfit
+    }
+    
+    func triggerProfitRefresh() {
+        profitRefreshTrigger += 1
+    }
+    
     func saveUserData() {
         UserDefaults.standard.set(userName, forKey: userNameKey)
         UserDefaults.standard.set(profilePicture, forKey: profilePictureKey)
@@ -7891,13 +10273,13 @@ class ProfileManager: ObservableObject {
     }
     
     private func loadUserData() {
-        let loadedName = UserDefaults.standard.string(forKey: userNameKey) ?? "@takeflight395"
+        let loadedName = UserDefaults.standard.string(forKey: userNameKey) ?? "@thriftuser438"
         // Clean and validate loaded username
         let nameWithoutAt = loadedName.hasPrefix("@") ? String(loadedName.dropFirst()) : loadedName
         let cleanedName = nameWithoutAt.lowercased().filter { $0.isLetter || $0.isNumber }
         
         if cleanedName.isEmpty {
-            userName = "@takeflight395"
+            userName = "@thriftuser438"
         } else {
             userName = "@" + cleanedName
         }
@@ -7913,6 +10295,8 @@ class ProfileManager: ObservableObject {
     }
 }
 
+
+
 // Update MainAppView to use ProfileManager
 struct MainAppView: View {
     @State private var selectedTab = 0
@@ -7920,11 +10304,17 @@ struct MainAppView: View {
     @StateObject private var songManager = SongManager()
     @StateObject private var profileManager = ProfileManager()
     @StateObject private var streakManager = StreakManager()
-    @State private var showingNewSongEditor = false
-    @State private var editingSong: Song?
-    @State private var songAudioManager: AudioManager?
-    @State private var showingCamera = false
-    @State private var showingImagePicker = false
+    @StateObject private var authManager = AuthenticationManager.shared
+    @StateObject private var usageTracker = AppUsageTracker()
+    @StateObject private var recentFindsManager = RecentFindsManager()
+    @Environment(\.scenePhase) private var scenePhase
+
+    @State private var showCameraFlow = true  // Start with camera open
+    @State private var showThriftAnalysis = false
+    @State private var currentAnalysisSong: Song?
+    @State private var showFirstTimeCongratsPopup = false
+    @State private var shouldTriggerMapUnlock = false
+    @State private var triggerMapUnlockAnimation = false
     
     var body: some View {
         GeometryReader { geometry in
@@ -7937,23 +10327,88 @@ struct MainAppView: View {
             }
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
-        .fullScreenCover(isPresented: $showingNewSongEditor) {
-            if let song = editingSong {
-                SongEditView(
-                    songManager: songManager, 
-                    song: song, 
-                    onDismiss: {
-                        showingNewSongEditor = false
-                        editingSong = nil
-                        songAudioManager = nil
-                    }
-                )
+        .onAppear {
+            // Check if user should see first-time congrats popup
+            checkAndPrepareFirstTimeFlow()
+            
+            // Start usage tracking session
+            usageTracker.startSession()
+        }
+        .onChange(of: scenePhase) { newPhase in
+            switch newPhase {
+            case .active:
+                // Auto-show camera when app becomes active (returns from background)
+                if !showCameraFlow {
+                    showCameraFlow = true
+                }
+                // Start new session
+                usageTracker.startSession()
+            case .inactive, .background:
+                // End session when app goes to background
+                usageTracker.endSession()
+            @unknown default:
+                break
             }
         }
-        .fullScreenCover(isPresented: $showingCamera) {
-            ThriftCameraView(isPresented: $showingCamera) { capturedImages in
-                // Create new analysis entry with captured images
-                createNewAnalysisWithImages(capturedImages)
+        .onChange(of: showCameraFlow) { isShowing in
+            // When camera is dismissed (without taking photos), check if we should trigger map unlock
+            if !isShowing && shouldTriggerMapUnlock {
+                triggerMapUnlockSequence()
+            }
+        }
+        // Camera Flow Overlay (no fullScreenCover - direct ZStack)
+        .overlay(
+            Group {
+                if showCameraFlow {
+                    ThriftCameraView(
+                        isPresented: $showCameraFlow,
+                        onImagesCapture: { images in
+                            print("📱 Captured \(images.count) images for thrift analysis")
+                            
+                            // Track scan for consumption data
+                            usageTracker.trackScan()
+                            usageTracker.trackFeatureUsage("item_scan")
+                            
+                            createNewAnalysisWithImages(images)
+                            showCameraFlow = false
+                            
+                            // Check if we should trigger map unlock after camera closes
+                            if shouldTriggerMapUnlock {
+                                triggerMapUnlockSequence()
+                            }
+                        }
+                    )
+                    .transition(.opacity)
+                    .zIndex(1000) // Ensure it's on top
+                }
+            }
+        )
+        // First Time Congrats Popup Overlay (only show when camera is not active)
+        .overlay(
+            Group {
+                if showFirstTimeCongratsPopup && !showCameraFlow {
+                    FirstTimeCongratsPopup(
+                        isPresented: $showFirstTimeCongratsPopup,
+                        onDismiss: {
+                            authManager.markFirstTimeCongratsPopupSeen()
+                        }
+                    )
+                    .zIndex(2000) // Higher than camera overlay
+                }
+            }
+        )
+        // Thrift Analysis Edit View
+        .sheet(isPresented: $showThriftAnalysis) {
+            if let song = currentAnalysisSong {
+                SongEditView(
+                    songManager: songManager,
+                    song: song,
+                    recentFindsManager: recentFindsManager,
+                    onDismiss: {
+                        showThriftAnalysis = false
+                        currentAnalysisSong = nil
+                    }
+                )
             }
         }
     }
@@ -7965,6 +10420,8 @@ struct MainAppView: View {
                 if selectedTab == 0 {
                 homeView
                 } else if selectedTab == 1 {
+                recentFindsView
+                } else if selectedTab == 2 {
                 profileView
             }
         }
@@ -7976,7 +10433,22 @@ struct MainAppView: View {
             audioManager: audioManager,
             songManager: songManager,
             streakManager: streakManager,
-            selectedTab: $selectedTab
+            profileManager: profileManager,
+            selectedTab: $selectedTab,
+            triggerMapUnlock: $triggerMapUnlockAnimation,
+            onMapUnlockCompleted: {
+                // Show popup after map unlock animation completes
+                showFirstTimeCongratsPopupAfterMapUnlock()
+            }
+        )
+    }
+    
+    
+    private var recentFindsView: some View {
+        RecentFindsPageView(
+            songManager: songManager,
+            audioManager: audioManager,
+            profileManager: profileManager
         )
     }
     
@@ -8004,9 +10476,6 @@ struct MainAppView: View {
     // MARK: - Tab Bar Content
     private var tabBarContent: some View {
         HStack {
-            Spacer()
-                .frame(width: 20) // Add some padding from left edge
-            
             // Home Tab
             Button(action: { selectedTab = 0 }) {
                 VStack(spacing: 4) {
@@ -8051,14 +10520,14 @@ struct MainAppView: View {
             
             // Plus button positioned on the right edge
             plusButton
-                .offset(x: -10, y: -28) // Move left and up
+                .offset(x: 0, y: -28) // Move up to sit on top of tab bar
         }
     }
     
     // MARK: - Plus Button
     private var plusButton: some View {
                         Button(action: {
-                            showingCamera = true
+                            showCameraFlow = true
                         }) {
                             Image(systemName: "plus")
                                 .font(.system(size: 24, weight: .bold))
@@ -8066,16 +10535,10 @@ struct MainAppView: View {
                                 .frame(width: 56, height: 56)
                                 .background(Color.black)
                                 .clipShape(Circle())
-                                .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
+                                .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 4)
                         }
     }
     
-    // MARK: - Profile Tab Button
-    private var profileTabButton: some View {
-                        Button(action: { selectedTab = 1 }) {
-            profileImage
-        }
-    }
     
     // MARK: - Profile Image
     @ViewBuilder
@@ -8100,7 +10563,7 @@ struct MainAppView: View {
     // MARK: - Profile Image Overlay
     private var profileImageOverlay: some View {
                                         Circle()
-                                            .stroke(selectedTab == 1 ? Color.black : Color.clear, lineWidth: 2)
+                                            .stroke(selectedTab == 1 ? Color(red: 0.83, green: 0.69, blue: 0.52) : Color.clear, lineWidth: 2)
     }
     
     // MARK: - Tab Bar Background
@@ -8118,34 +10581,356 @@ struct MainAppView: View {
     
     // MARK: - Camera Integration
     private func createNewAnalysisWithImages(_ capturedImages: [UIImage]) {
+        guard !capturedImages.isEmpty else { 
+            print("⚠️ No images captured, skipping thrift analysis")
+            return 
+        }
+        
+        print("🔍 Creating new thrift analysis for \(capturedImages.count) images...")
+        
+        // Track analysis creation for consumption data
+        usageTracker.trackFeatureUsage("price_analysis")
+        
+        // Track API calls that will be made for this analysis
+        ConsumptionRequestService.shared.trackOpenAICall(successful: true, estimatedCostCents: 15) // 3 OpenAI calls
+        ConsumptionRequestService.shared.trackSerpAPICall(successful: true, estimatedCostCents: 5)   // 1 SerpAPI call
+        ConsumptionRequestService.shared.trackFirebaseCall(successful: true, estimatedCostCents: 1)  // Firebase storage
+        
+        // Track successful analysis once market data is loaded
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            usageTracker.trackSuccessfulAnalysis()
+        }
+        
         // Create a new song entry for the thrift analysis
-        var newSong = songManager.createNewSong()
+        var newSong = Song(
+            title: "Analyzing...",
+            lyrics: "",
+            imageName: "default",
+            useWaveformDesign: false,
+            lastEdited: Date()
+        )
         
         // Set the first captured image as the main image (for SerpAPI)
         if let firstImage = capturedImages.first {
             newSong.customImage = firstImage
+            
+            // Check if we have pre-analyzed results from camera flow
+            if let cachedTitle = AnalysisResultsCache.shared.getGeneratedTitle(for: firstImage) {
+                newSong.title = cachedTitle
+                print("📝 Using pre-generated title: \(cachedTitle)")
+            }
         }
         
-        // Store additional images (if any) for ChatGPT analysis
-        if capturedImages.count > 1 {
-            let additionalImages = Array(capturedImages.dropFirst())
-            newSong.additionalImages = additionalImages
-            print("🔍 Stored \(capturedImages.count) images: 1 main + \(additionalImages.count) additional")
-        } else {
-            print("🔍 Stored 1 image only")
-        }
+        // Clear any existing cache for this new song to prevent old results from showing
+        MarketDataCache.shared.removeMarketData(for: newSong.id.uuidString, hasCustomImage: true)
+        MarketDataCache.shared.removeMarketData(for: newSong.id.uuidString, hasCustomImage: false)
         
-        // Update the title to reflect it's a thrift analysis
-        newSong.title = "Thrift Analysis"
-        newSong.lastEdited = Date()
+        // Also clear generic thrift search query cache to prevent cached results for new images
+        let genericSearchQuery = "vintage fashion clothing accessories thrift"
+        MarketDataCache.shared.removeMarketDataByQuery(searchQuery: genericSearchQuery, hasCustomImage: true)
+        MarketDataCache.shared.removeMarketDataByQuery(searchQuery: genericSearchQuery, hasCustomImage: false)
+        
+        print("🗑️ Cleared cached data for new thrift analysis song and generic search queries")
         
         // Add the song to the manager (this will automatically add it to recents)
         songManager.addSong(newSong)
         
-        // Navigate to the analysis screen
-        editingSong = newSong
-        songAudioManager = AudioManager()
-        showingNewSongEditor = true
+        print("✅ Thrift analysis entry created for '\(newSong.title)' (ID: \(newSong.id)) - ready for analysis")
+        
+        // Create a RecentFind entry for the Profit Tracker
+        createRecentFindFromAnalysis(song: newSong, capturedImages: capturedImages)
+        
+        // Skip immediate analysis - let the background task from camera flow handle it
+        // This avoids duplicate uploads and API calls
+        
+        // Show the thrift analysis edit view
+        currentAnalysisSong = newSong
+        showThriftAnalysis = true
+    }
+    
+    // MARK: - Recent Find Creation
+    private func createRecentFindFromAnalysis(song: Song, capturedImages: [UIImage]) {
+        // Extract item details from the song title and analysis
+        let itemName = song.title == "Analyzing..." ? "New Thrift Find" : song.title
+        
+        // Determine category based on item name
+        let category = categorizeItem(name: itemName)
+        
+        // Generate estimated value based on category and item type
+        let estimatedValue = generateEstimatedValue(for: itemName, category: category)
+        
+        // Determine condition (default to good for new finds)
+        let condition = "8/10"
+        
+        // Extract brand if possible from the name
+        let brand = extractBrand(from: itemName)
+        
+        // Default location
+        let location = "Recent Scan"
+        
+        // Convert first captured image to Data for storage
+        let imageData: Data? = capturedImages.first?.jpegData(compressionQuality: 0.8)
+        
+        // Debug logging for image data
+        if let imageData = imageData {
+            print("📷 Successfully converted image to data: \(imageData.count) bytes")
+        } else {
+            print("⚠️ Failed to convert captured image to data. Captured images count: \(capturedImages.count)")
+        }
+        
+        // Create the RecentFind
+        let recentFind = RecentFind(
+            id: UUID(),
+            name: itemName,
+            category: category,
+            estimatedValue: estimatedValue,
+            condition: condition,
+            brand: brand,
+            location: location,
+            dateFound: Date(),
+            notes: "Scanned with camera analysis",
+            imageData: imageData
+        )
+        
+        // Add to recent finds manager
+        recentFindsManager.addRecentFind(recentFind)
+        
+        print("📱 Added new recent find: \(itemName) - $\(estimatedValue)")
+        print("🆔 Recent find ID: \(recentFind.id)")
+        print("📊 Total recent finds: \(recentFindsManager.recentFinds.count)")
+    }
+    
+    private func categorizeItem(name: String) -> String {
+        let lowercaseName = name.lowercased()
+        
+        if lowercaseName.contains("jordan") || lowercaseName.contains("nike") || lowercaseName.contains("sneaker") || lowercaseName.contains("shoe") {
+            return "Sneakers"
+        } else if lowercaseName.contains("bag") || lowercaseName.contains("purse") || lowercaseName.contains("handbag") || lowercaseName.contains("coach") {
+            return "Accessories"
+        } else if lowercaseName.contains("hoodie") || lowercaseName.contains("shirt") || lowercaseName.contains("jacket") || lowercaseName.contains("clothing") || lowercaseName.contains("dress") {
+            return "Clothing"
+        } else if lowercaseName.contains("lamp") || lowercaseName.contains("vase") || lowercaseName.contains("decor") {
+            return "Home Decor"
+        } else {
+            return "Clothing" // Default category
+        }
+    }
+    
+    private func generateEstimatedValue(for name: String, category: String) -> Double {
+        let lowercaseName = name.lowercased()
+        
+        // High-value items
+        if lowercaseName.contains("jordan") || lowercaseName.contains("nike") {
+            return Double.random(in: 80...250)
+        } else if lowercaseName.contains("coach") || lowercaseName.contains("designer") {
+            return Double.random(in: 50...200)
+        } else if lowercaseName.contains("vintage") {
+            return Double.random(in: 25...100)
+        } else {
+            // Category-based defaults
+            switch category {
+            case "Sneakers":
+                return Double.random(in: 30...120)
+            case "Accessories":
+                return Double.random(in: 20...80)
+            case "Clothing":
+                return Double.random(in: 15...60)
+            case "Home Decor":
+                return Double.random(in: 10...50)
+            default:
+                return Double.random(in: 10...40)
+            }
+        }
+    }
+    
+    private func extractBrand(from name: String) -> String? {
+        let lowercaseName = name.lowercased()
+        
+        if lowercaseName.contains("nike") {
+            return "Nike"
+        } else if lowercaseName.contains("jordan") {
+            return "Nike"
+        } else if lowercaseName.contains("coach") {
+            return "Coach"
+        } else if lowercaseName.contains("ecko") {
+            return "Ecko Unltd"
+        } else if lowercaseName.contains("levi") {
+            return "Levi's"
+        } else {
+            return nil
+        }
+    }
+    
+    // MARK: - Update Recent Find
+    private func updateRecentFindTitle(songId: UUID, newTitle: String) {
+        // Find the recent find that corresponds to this song and update it
+        if let findIndex = recentFindsManager.recentFinds.firstIndex(where: { find in
+            // Match by approximate time (within 10 minutes) and if the current name is generic
+            let timeDifference = abs(find.dateFound.timeIntervalSince(Date()))
+            return timeDifference < 600 && (find.name == "New Thrift Find" || find.name == "Analyzing...")
+        }) {
+            // Create updated find with new information
+            let oldFind = recentFindsManager.recentFinds[findIndex]
+            let category = categorizeItem(name: newTitle)
+            let estimatedValue = generateEstimatedValue(for: newTitle, category: category)
+            let brand = extractBrand(from: newTitle)
+            
+            let updatedFind = RecentFind(
+                id: oldFind.id,
+                name: newTitle,
+                category: category,
+                estimatedValue: estimatedValue,
+                condition: oldFind.condition,
+                brand: brand,
+                location: oldFind.location,
+                dateFound: oldFind.dateFound,
+                notes: oldFind.notes,
+                imageData: oldFind.imageData
+            )
+            
+            // Replace the old find with updated one
+            recentFindsManager.recentFinds[findIndex] = updatedFind
+            recentFindsManager.saveFinds()
+            
+            print("🔄 Updated recent find: \(oldFind.name) → \(newTitle)")
+        }
+    }
+    
+    // MARK: - Photo Upload Analysis
+    private func performUploadAnalysis(for image: UIImage, songId: UUID) async {
+        print("🔍 Starting parallel analysis for uploaded photo...")
+        
+        do {
+            // Run clothing analysis and title generation in parallel
+            async let clothingAnalysis = performUploadClothingAnalysis(for: image)
+            async let titleGeneration = performUploadTitleGeneration(for: image)
+            
+            let (clothingDetails, generatedTitle) = try await (clothingAnalysis, titleGeneration)
+            
+            await MainActor.run {
+                // Store results in cache for immediate use
+                if let details = clothingDetails {
+                    AnalysisResultsCache.shared.storeClothingDetails(details, for: image)
+                }
+                if let title = generatedTitle {
+                    AnalysisResultsCache.shared.storeGeneratedTitle(title, for: image)
+                    
+                    // Update the song title if it's still "Analyzing..."
+                    if let songIndex = songManager.songs.firstIndex(where: { $0.id == songId }),
+                       songManager.songs[songIndex].title == "Analyzing..." {
+                        songManager.songs[songIndex].title = title
+                        // Also update the corresponding recent find
+                        updateRecentFindFromAnalysis(recentFindsManager: recentFindsManager, songId: songId, newTitle: title)
+                    }
+                }
+                print("✅ Upload analysis complete - results cached")
+            }
+        } catch {
+            print("❌ Upload analysis failed: \(error)")
+        }
+    }
+    
+    private func performUploadClothingAnalysis(for image: UIImage) async throws -> ClothingDetails? {
+        let prompt = """
+        Analyze this clothing item and provide details in this exact JSON format:
+        {
+            "brand": "brand name or 'Unknown'",
+            "category": "category like 'Shirt', 'Pants', 'Dress', etc.",
+            "color": "primary color",
+            "size": "size if visible or 'Unknown'",
+            "material": "material type if visible or 'Unknown'",
+            "style": "style description",
+            "condition": "condition assessment",
+            "estimatedValue": "estimated resale value or 'Unknown'",
+            "isAuthentic": true/false or null if unknown
+        }
+        Be specific and accurate. If information isn't clearly visible, use 'Unknown' or null.
+        """
+        
+        do {
+            let response = try await OpenAIService.shared.generateVisionCompletion(
+                prompt: prompt,
+                images: [image],
+                maxTokens: 500,
+                temperature: 0.3
+            )
+            
+            return parseUploadClothingDetailsResponse(response)
+        } catch {
+            print("🔍 Upload clothing analysis failed: \(error)")
+            return nil
+        }
+    }
+    
+    private func performUploadTitleGeneration(for image: UIImage) async throws -> String? {
+        let prompt = """
+        Generate a concise, descriptive title for this thrift item for resale. 
+        Format: [Brand/Style] [Type] [Key Features]
+        Examples: "Vintage Levi's Denim Jacket", "Nike Air Force 1 Sneakers", "Floral Midi Dress"
+        Keep it under 6 words and focus on the most sellable aspects.
+        """
+        
+        do {
+            let response = try await OpenAIService.shared.generateVisionCompletion(
+                prompt: prompt,
+                images: [image],
+                maxTokens: 50,
+                temperature: 0.7
+            )
+            
+            return response.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            print("🏷️ Upload title generation failed: \(error)")
+            return nil
+        }
+    }
+    
+    private func parseUploadClothingDetailsResponse(_ response: String) -> ClothingDetails? {
+        // Extract JSON from response if it contains other text
+        let jsonStart = response.firstIndex(of: "{") ?? response.startIndex
+        let jsonEnd = response.lastIndex(of: "}") ?? response.endIndex
+        let jsonString = String(response[jsonStart...jsonEnd])
+        
+        guard let data = jsonString.data(using: .utf8) else { return nil }
+        
+        do {
+            let decoder = JSONDecoder()
+            return try decoder.decode(ClothingDetails.self, from: data)
+        } catch {
+            print("🔍 Failed to decode upload clothing details: \(error)")
+            return nil
+        }
+    }
+    
+    // MARK: - First Time Congrats Popup Logic
+    private func checkAndPrepareFirstTimeFlow() {
+        // Only prepare if user hasn't seen it and has completed subscription (first time reaching main app)
+        if !authManager.hasSeenFirstTimeCongratsPopup && authManager.hasCompletedSubscription {
+            shouldTriggerMapUnlock = true
+            print("🎉 First time user detected - will trigger map unlock after camera closes")
+        }
+    }
+    
+    private func triggerMapUnlockSequence() {
+        shouldTriggerMapUnlock = false
+        
+        // Wait a moment for camera to fully close, then switch to home tab and trigger map unlock
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            selectedTab = 0 // Ensure we're on home tab
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                // Trigger map unlock animation via binding
+                triggerMapUnlockAnimation = true
+            }
+        }
+    }
+    
+    private func showFirstTimeCongratsPopupAfterMapUnlock() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
+                showFirstTimeCongratsPopup = true
+            }
+        }
     }
 }
 
@@ -8265,7 +11050,7 @@ class StreakManager: ObservableObject {
         currentStreak = calculateCurrentStreak()
     }
     
-    private func calculateCurrentStreak() -> Int {
+    func calculateCurrentStreak() -> Int {
         let today = calendar.startOfDay(for: currentEffectiveDate)
         var streak = 0
         var currentDate = today
@@ -8311,6 +11096,11 @@ class StreakManager: ObservableObject {
 // Streak Calendar View matching Figma design
 struct StreakCalendarView: View {
     @ObservedObject var streakManager: StreakManager
+    @ObservedObject var profileManager: ProfileManager
+    @ObservedObject var songManager: SongManager
+    @State private var giftAnimating = false
+    @Binding var showGiftNotification: Bool
+    @Binding var giftBoxPosition: CGPoint
 
     
     private let calendar = Calendar.current
@@ -8322,17 +11112,38 @@ struct StreakCalendarView: View {
     
     private var weekDays: [Date] {
         let effectiveToday = streakManager.currentEffectiveDate
-        guard let startOfWeek = calendar.dateInterval(of: .weekOfYear, for: effectiveToday)?.start else {
-            return []
-        }
+        let startOfToday = calendar.startOfDay(for: effectiveToday)
         
-        return (0..<7).compactMap { dayOffset in
-            calendar.date(byAdding: .day, value: dayOffset, to: startOfWeek)
+        // Create 7 days centered around today, with today in the second position (index 1)
+        return (-1..<6).compactMap { dayOffset in
+            calendar.date(byAdding: .day, value: dayOffset, to: startOfToday)
         }
     }
     
     private func isToday(_ date: Date) -> Bool {
         calendar.isDate(date, inSameDayAs: streakManager.currentEffectiveDate)
+    }
+    
+    private func isFourthDayFromToday(_ date: Date) -> Bool {
+        // Use account creation date, not current date, so gift has a fixed date
+        let accountCreationDate = getAccountCreationDate()
+        let giftDate = calendar.startOfDay(for: calendar.date(byAdding: .day, value: 4, to: accountCreationDate) ?? accountCreationDate)
+        let checkDate = calendar.startOfDay(for: date)
+        return calendar.isDate(giftDate, inSameDayAs: checkDate)
+    }
+    
+    private func getAccountCreationDate() -> Date {
+        let userDefaults = UserDefaults.standard
+        let accountCreationKey = "AccountCreationDate"
+        
+        if let savedDate = userDefaults.object(forKey: accountCreationKey) as? Date {
+            return savedDate
+        } else {
+            // First time - set account creation date to today
+            let today = calendar.startOfDay(for: Date())
+            userDefaults.set(today, forKey: accountCreationKey)
+            return today
+        }
     }
     
     private func isPartOfCurrentStreak(_ date: Date) -> Bool {
@@ -8364,33 +11175,62 @@ struct StreakCalendarView: View {
     }
     
     var body: some View {
+        ZStack {
         VStack(spacing: 8) {
         // Calendar week view
         HStack(spacing: 0) {
             ForEach(weekDays, id: \.self) { date in
                     let isStreakDay = isPartOfCurrentStreak(date)
                     let isTodayDate = isToday(date)
+                    let isGiftDay = isFourthDayFromToday(date)
                     
                 VStack(spacing: 8) {
-                    // Dashed circle with day letter inside
+                    // Show gift emoji for 4th day, regular circle for others
+                    if isGiftDay {
+                        // Gift emoji with pulse and gentle movement animation
+                        GeometryReader { geometry in
+                            Text("🎁")
+                                .font(.system(size: 32))
+                                .scaleEffect(giftAnimating ? 1.3 : 1.0)
+                                .rotationEffect(.degrees(giftAnimating ? 8 : -8))
+                                .opacity(giftAnimating ? 1.0 : 0.9)
+                                .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: giftAnimating)
+                                .onAppear {
+                                    giftAnimating = true
+                                    // Capture the gift box position
+                                    let frame = geometry.frame(in: .global)
+                                    giftBoxPosition = CGPoint(
+                                        x: frame.midX,
+                                        y: frame.midY
+                                    )
+                                }
+                                .onDisappear {
+                                    giftAnimating = false
+                                }
+                                .onTapGesture {
+                                    triggerGiftNotification()
+                                }
+                        }
+                        .frame(width: 32, height: 32)
+                    } else {
+                    // Consistent dashed circle design for all days
                     ZStack {
-                            
                         Circle()
                             .stroke(
                                 style: StrokeStyle(
-                                        lineWidth: isStreakDay ? 1.5 : 1.0,
+                                    lineWidth: 1.5,
                                     lineCap: .round,
-                                        dash: isStreakDay ? [] : [4.5, 4.5] // Solid line for streak days, dashed for others
+                                    dash: [4.5, 4.5] // Dashed design for all days
                                 )
                             )
                             .foregroundStyle(
-                                    isStreakDay ? 
+                                isStreakDay ? 
                                 LinearGradient(
                                     gradient: Gradient(colors: [
-                                        Color(red: 0.2, green: 0.8, blue: 0.4),  // Bright green
-                                        Color(red: 0.1, green: 0.7, blue: 0.3),  // Medium green
-                                        Color(red: 0.0, green: 0.6, blue: 0.2),  // Darker green
-                                        Color(red: 0.2, green: 0.8, blue: 0.4)   // Back to bright
+                                        Color(red: 0.96, green: 0.87, blue: 0.70),  // Light beige
+                                        Color(red: 0.83, green: 0.69, blue: 0.52),  // Medium beige
+                                        Color(red: 0.76, green: 0.60, blue: 0.42),  // Darker beige
+                                        Color(red: 0.96, green: 0.87, blue: 0.70)   // Back to light
                                     ]),
                                     startPoint: .topLeading,
                                     endPoint: .bottomTrailing
@@ -8401,31 +11241,30 @@ struct StreakCalendarView: View {
                                     endPoint: .bottomTrailing
                                 )
                             )
-                                .background(
-                                    // Fill background for streak days
-                                    isStreakDay ? 
-                                    Circle()
-                                        .fill(
-                                            LinearGradient(
-                                                gradient: Gradient(colors: [
-                                                    Color(red: 0.2, green: 0.8, blue: 0.4),  // Bright green
-                                                    Color(red: 0.1, green: 0.7, blue: 0.3),  // Medium green
-                                                    Color(red: 0.0, green: 0.6, blue: 0.2),  // Darker green
-                                                    Color(red: 0.2, green: 0.8, blue: 0.4)   // Back to bright
-                                                ]),
-                                                startPoint: .topLeading,
-                                                endPoint: .bottomTrailing
-                                            )
-                                            .opacity(0.15)
+                            .background(
+                                // Fill background for streak days
+                                isStreakDay ? 
+                                Circle()
+                                    .fill(
+                                        LinearGradient(
+                                            gradient: Gradient(colors: [
+                                                Color(red: 0.96, green: 0.87, blue: 0.70),  // Light beige
+                                                Color(red: 0.83, green: 0.69, blue: 0.52),  // Medium beige
+                                                Color(red: 0.76, green: 0.60, blue: 0.42),  // Darker beige
+                                                Color(red: 0.96, green: 0.87, blue: 0.70)   // Back to light
+                                            ]),
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
                                         )
-                                    : nil
-                                )
-                            .frame(width: 32, height: 32)
-                                .scaleEffect(isTodayDate ? 1.1 : 1.0)
-                                .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: isTodayDate)
+                                        .opacity(0.15)
+                                    )
+                                : nil
+                            )
+                            .frame(width: 32, height: 32) // Same size for all days
+                            .scaleEffect(isTodayDate ? 1.1 : 1.0)
                             .shadow(
-                                    color: isTodayDate ? Color.green.opacity(0.6) : .clear,
-                                    radius: isTodayDate ? 8 : 0,
+                                color: isTodayDate ? Color(red: 0.83, green: 0.69, blue: 0.52).opacity(0.6) : .clear,
+                                radius: isTodayDate ? 8 : 0,
                                 x: 0,
                                 y: 0
                             )
@@ -8442,9 +11281,10 @@ struct StreakCalendarView: View {
                                 x: 0,
                                 y: 0
                             )
+                                            }
                     }
                     
-                    // Day number below circle
+                    // Day number below circle (show for all days including gift day)
                     Text(dateFormatter.string(from: date))
                             .font(.system(size: 14, weight: isTodayDate ? .bold : .medium))
                         .foregroundColor(
@@ -8457,6 +11297,10 @@ struct StreakCalendarView: View {
                             y: 0
                         )
                 }
+                .onLongPressGesture(minimumDuration: 0.5) {
+                    // Debug feature: long press to simulate streak on this date
+                    debugAddStreakDay(date)
+                }
                 
                 if date != weekDays.last {
                     Spacer()
@@ -8464,6 +11308,9 @@ struct StreakCalendarView: View {
             }
         }
         .padding(.horizontal, 0)
+        }
+        
+
         }
     }
     
@@ -8473,6 +11320,51 @@ struct StreakCalendarView: View {
         let dayName = formatter.string(from: date)
         return String(dayName.prefix(1))
     }
+    
+    private func triggerGiftNotification() {
+        // Add haptic feedback
+        let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+        impactFeedback.impactOccurred()
+        
+        // Show notification with animation
+        withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
+            showGiftNotification = true
+        }
+    }
+    
+    // Debug function to add/remove streak days
+    private func debugAddStreakDay(_ date: Date) {
+        let startOfDay = calendar.startOfDay(for: date)
+        
+        // Add haptic feedback
+        let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+        impactFeedback.impactOccurred()
+        
+        if streakManager.hasWrittenOnDate(startOfDay) {
+            // Remove the day if it exists
+            streakManager.writingDays.remove(startOfDay)
+            print("🐛 DEBUG: Removed streak day for \(dateFormatter.string(from: date))")
+        } else {
+            // Add the day if it doesn't exist
+            streakManager.writingDays.insert(startOfDay)
+            print("🐛 DEBUG: Added streak day for \(dateFormatter.string(from: date))")
+        }
+        
+        // Update streak and save
+        streakManager.objectWillChange.send()
+        streakManager.saveData()
+        
+        // Recalculate the current streak
+        DispatchQueue.main.async {
+            streakManager.currentStreak = streakManager.calculateCurrentStreak()
+            print("🐛 DEBUG: Current streak updated to \(streakManager.currentStreak)")
+            
+            // Show which days are currently in the streak
+            let sortedDays = streakManager.writingDays.sorted(by: >)
+            let dayStrings = sortedDays.prefix(7).map { dateFormatter.string(from: $0) }
+            print("🐛 DEBUG: Recent writing days: \(dayStrings.joined(separator: ", "))")
+        }
+    }
 }
 
 // Home View - Main screen with empty state
@@ -8480,10 +11372,42 @@ struct HomeView: View {
     @ObservedObject var audioManager: AudioManager
     @ObservedObject var songManager: SongManager
     @ObservedObject var streakManager: StreakManager
+    @ObservedObject var profileManager: ProfileManager
     @State private var scrollOffset: CGFloat = 0
     @Binding var selectedTab: Int
+    @Binding var triggerMapUnlock: Bool
+    @StateObject private var mapController = MapViewController()
+    @StateObject private var mapService = ThriftStoreMapService()
+    @State private var showGiftNotification = false
+    @State private var countdownTimer: Timer?
+    @State private var timeRemaining = ""
+    @State private var countdownDays = 0
+    @State private var countdownHours = 0
+    @State private var countdownMinutes = 0
+    @State private var countdownSeconds = 0
+    @State private var popupScale: CGFloat = 0.1
+    @State private var popupOffset: CGSize = .zero
+    @State private var showPopupContent = false
+    @State private var giftBoxPosition: CGPoint = .zero
+    @State private var actuallyShowPopup = false
+    
+    // Map unlock animation states
+    @State private var mapUnlockScale: CGFloat = 0.8
+    @State private var mapUnlockOpacity: Double = 0.3
+    @State private var showUnlockOverlay = false
+    @State private var unlockAnimationCompleted = false
+    
+    // Debug states
+    @State private var showDebugButton = false
+    
+    // Featured posts carousel state
+    @State private var featuredPostIndex = 0
+    
+    // Callback for when unlock animation completes
+    var onMapUnlockCompleted: (() -> Void)?
     
     var body: some View {
+        ZStack {
         VStack(spacing: 0) {
             // Combined Header and Streak Calendar section with extended background
             VStack(spacing: 0) {
@@ -8492,64 +11416,112 @@ struct HomeView: View {
                     if scrollOffset <= 0 {
                         // Expanded Header
                 HStack {
-                    // Brand logo and name
-                    HStack(spacing: 4) {
-                        Image(systemName: "tshirt")
-                            .font(.system(size: 24, weight: .semibold))
-                                    .foregroundColor(.black)
-                        
-                        Text("Thrifty")
-                            .font(.system(size: 24, weight: .bold))
-                            .foregroundColor(.black)
-                    }
+                    // Brand logo
+                    Image("thrifty")
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(height: 32)
                     
                     Spacer()
                     
-                    // Streak counter (replacing settings)
-                    HStack(spacing: 6) {
-                        Image(systemName: "flame.fill")
-                            .font(.system(size: 16))
-                            .foregroundColor(.orange)
+                    HStack(spacing: 8) {
+                        // Debug button (only visible when enabled)
+                        if showDebugButton {
+                            Button(action: {
+                                // Trigger debug popup flow
+                                triggerDebugMapUnlock()
+                            }) {
+                                Text("🐛")
+                                    .font(.system(size: 16))
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.red.opacity(0.3), lineWidth: 1)
+                            )
+                        }
                         
-                        Text("\(streakManager.currentStreak)")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundColor(.black)
+                        // Streak counter and money bubble side by side
+                        HStack(spacing: 8) {
+                            // Streak bubble
+                            HStack(spacing: 6) {
+                                Image(systemName: "flame.fill")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(.orange)
+                                
+                                Text("\(streakManager.currentStreak)")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundColor(.black)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .stroke(Color.white.opacity(0.3), lineWidth: 0.5)
+                            )
+                            .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
+                            
+                            // Money bubble (same style as streak bubble)
+                            HStack(spacing: 6) {
+                                let totalProfit = profileManager.calculateTotalProfit(from: songManager)
+                                Text("$\(String(format: "%.0f", totalProfit))")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundColor(.black)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .stroke(Color.white.opacity(0.3), lineWidth: 0.5)
+                            )
+                            .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
+                            .id(profileManager.profitRefreshTrigger)
+                        }
+                        .onLongPressGesture(minimumDuration: 2.0) {
+                            // Long press on streak counter to toggle debug button
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                                showDebugButton.toggle()
+                            }
+                            
+                            // Haptic feedback
+                            let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+                            impactFeedback.impactOccurred()
+                            
+                            print("🐛 Debug button toggled: \(showDebugButton)")
+                        }
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16)
-                            .stroke(Color.white.opacity(0.3), lineWidth: 0.5)
-                    )
-                    .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
                         }
                     } else {
                         // Collapsed Header
                         HStack {
                             Spacer()
-                            HStack(spacing: 4) {
-                                Image(systemName: "tshirt")
-                                    .font(.system(size: 24, weight: .semibold))
-                                    .foregroundColor(.black)
-                                
-                                Text("Thrifty")
-                                    .font(.system(size: 24, weight: .bold))
-                                    .foregroundColor(.black)
-                            }
+                            Image("thrifty")
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(height: 32)
                             Spacer()
                         }
                     }
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 8)
                 .padding(.top, 32)
                 .padding(.bottom, 16)
                 
-                // Streak Calendar
-                StreakCalendarView(streakManager: streakManager)
-                    .padding(.top, 4)
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 20)
+                // Streak Calendar with embedded money bubble
+                StreakCalendarView(
+                    streakManager: streakManager, 
+                    profileManager: profileManager,
+                    songManager: songManager,
+                    showGiftNotification: $showGiftNotification, 
+                    giftBoxPosition: $giftBoxPosition
+                )
+                .padding(.top, 4)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 20)
             }
             .background(
                 GeometryReader { geometry in
@@ -8559,13 +11531,14 @@ struct HomeView: View {
                             .fill(Color.white)
                             .frame(height: 180 + geometry.safeAreaInsets.top)
                         
-                        // Subtle gradient overlay for depth
+                        // Soft gradient overlay for subtle depth
                         LinearGradient(
                             gradient: Gradient(stops: [
                                 .init(color: Color.clear, location: 0.0),
-                                .init(color: Color.clear, location: geometry.safeAreaInsets.top / (180 + geometry.safeAreaInsets.top)),
-                                .init(color: Color.gray.opacity(0.1), location: (geometry.safeAreaInsets.top + 126) / (180 + geometry.safeAreaInsets.top)),
-                                .init(color: Color.gray.opacity(0.2), location: 1.0)
+                                .init(color: Color.clear, location: 0.4),
+                                .init(color: Color.gray.opacity(0.03), location: 0.7),
+                                .init(color: Color.gray.opacity(0.08), location: 0.9),
+                                .init(color: Color.gray.opacity(0.05), location: 1.0)
                             ]),
                             startPoint: .top,
                             endPoint: .bottom
@@ -8586,9 +11559,9 @@ struct HomeView: View {
                 VStack(spacing: 16) {
                     // Content with standard padding
                     VStack(spacing: 16) {
-                        // Recently Added header
+                        // Recent Finds header
                         HStack {
-                            Text("Recently Added")
+                            Text("Recent Finds")
                                 .font(.system(size: 24, weight: .bold))
                                 .foregroundColor(.black)
                             Spacer()
@@ -8609,9 +11582,220 @@ struct HomeView: View {
                             }
                             .padding(.trailing, 24)
                         }
+                    }
+                    .padding(.horizontal, 24)
+                    
+                    // Divider line - extends to screen edges
+                    Rectangle()
+                        .fill(Color.gray.opacity(0.3))
+                        .frame(height: 1)
+                        .padding(.top, 32)
+                        .padding(.bottom, 16)
+                    
+                    // Thrifts Near Me section
+                    VStack(spacing: 16) {
+                        // Section header
+                        HStack {
+                            Text("Thrifts Near Me")
+                                .font(.system(size: 24, weight: .bold))
+                                .foregroundColor(.black)
+                            Spacer()
+                        }
                         
+                        // Map View with Zoom Controls
+                        ZStack(alignment: .topTrailing) {
+                            GoogleMapsView(mapService: mapService, mapController: mapController)
+                                .frame(height: 250)
+                                .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
+                                .shadow(color: Color.black.opacity(0.1), radius: 8, x: 0, y: 4)
+                                .preferredColorScheme(.light)
+                                .scaleEffect(mapUnlockScale)
+                                .opacity(mapUnlockOpacity)
+                                .overlay(
+                                    // Unlock animation overlay
+                                    Group {
+                                        if showUnlockOverlay {
+                                            ZStack {
+                                                // Semi-transparent background
+                                                RoundedRectangle(cornerRadius: 16)
+                                                    .fill(Color.black.opacity(0.7))
+                                                
+                                                VStack(spacing: 12) {
+                                                    // Lock icon that transforms to unlock
+                                                    Image(systemName: unlockAnimationCompleted ? "lock.open.fill" : "lock.fill")
+                                                        .font(.system(size: 40, weight: .bold))
+                                                        .foregroundColor(.white)
+                                                        .scaleEffect(unlockAnimationCompleted ? 1.2 : 1.0)
+                                                        .rotationEffect(.degrees(unlockAnimationCompleted ? 10 : 0))
+                                                    
+                                                    Text("Map Unlocked!")
+                                                        .font(.system(size: 18, weight: .bold))
+                                                        .foregroundColor(.white)
+                                                        .opacity(unlockAnimationCompleted ? 1.0 : 0.0)
+                                                }
+                                            }
+                                            .transition(.opacity)
+                                        }
+                                    }
+                                )
+                                .onAppear {
+                                    // Force refresh when view appears
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                        // This helps with the navigation back issue
+                                        print("🗺️ Map view appeared - checking for location and stores")
+                                        
+                                        // Ensure location tracking is active
+                                        LocationManager.shared.startLocationTracking()
+                                        
+                                        // If we have location and no stores, trigger search
+                                        if let location = LocationManager.shared.location,
+                                           mapService.thriftStores.isEmpty {
+                                            print("🔍 Map appeared with location but no stores - searching now...")
+                                            Task {
+                                                await mapService.searchNearbyThriftStores(
+                                                    latitude: location.coordinate.latitude,
+                                                    longitude: location.coordinate.longitude
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
-                                .padding(.horizontal, 24)
+                            
+                            // Zoom Controls
+                            VStack(spacing: 8) {
+                                // Zoom In Button
+                                Button(action: {
+                                    mapController.zoomIn()
+                                }) {
+                                    Image(systemName: "plus")
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundColor(.black)
+                                        .frame(width: 32, height: 32)
+                                        .background(.white)
+                                        .cornerRadius(8)
+                                        .shadow(color: Color.black.opacity(0.1), radius: 2, x: 0, y: 1)
+                                }
+                                
+                                // Zoom Out Button
+                                Button(action: {
+                                    mapController.zoomOut()
+                                }) {
+                                    Image(systemName: "minus")
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundColor(.black)
+                                        .frame(width: 32, height: 32)
+                                        .background(.white)
+                                        .cornerRadius(8)
+                                        .shadow(color: Color.black.opacity(0.1), radius: 2, x: 0, y: 1)
+                                }
+                            }
+                            .padding(.top, 12)
+                            .padding(.trailing, 12)
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 16)
+                    
+                    // Divider line - extends to screen edges
+                    Rectangle()
+                        .fill(Color.gray.opacity(0.3))
+                        .frame(height: 1)
+                        .padding(.top, 32)
+                        .padding(.bottom, 16)
+                    
+                    // Featured Profit Users section
+                    VStack(spacing: 16) {
+                        // Section header - aligned with other sections
+                        HStack {
+                            Text("Users who profited this week 💰")
+                                .font(.system(size: 22, weight: .bold))
+                                .foregroundColor(.black)
+                            Spacer()
+                        }
+                        
+                        // Tinder-style card stack
+                        TinderCardStack()
+                            .frame(height: 380)
+                            .frame(maxWidth: .infinity) // Match map width
+                            .padding(.horizontal, -12) // Compensate for parent padding to center cards
+                        
+                        // Facebook community button
+                        Button(action: {
+                            if let url = URL(string: "https://www.facebook.com/groups/954491966015035/") {
+                                UIApplication.shared.open(url)
+                            }
+                        }) {
+                            HStack(spacing: 12) {
+                                Image("facebook-logo-2019")
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .frame(width: 24, height: 24)
+                                
+                                 Text("Join our Facebook group")
+                                     .font(.system(size: 16, weight: .medium))
+                                     .foregroundColor(.black)
+                                 
+                                 Spacer()
+                                 
+                                 Image(systemName: "arrow.right")
+                                     .font(.system(size: 16, weight: .medium))
+                                     .foregroundColor(.black)
+                             }
+                             .padding(.horizontal, 16)
+                             .padding(.vertical, 16)
+                             .background(
+                                 RoundedRectangle(cornerRadius: 12)
+                                     .fill(Color.white)
+                             )
+                             .overlay(
+                                 RoundedRectangle(cornerRadius: 12)
+                                     .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                             )
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, -12) // Match the card width
+                        .padding(.top, 16)
+                        
+                        // Reddit community button
+                        Button(action: {
+                            if let url = URL(string: "https://www.reddit.com/r/Flipping/") {
+                                UIApplication.shared.open(url)
+                            }
+                        }) {
+                            HStack(spacing: 12) {
+                                 Image("redditlogo")
+                                     .resizable()
+                                     .aspectRatio(contentMode: .fit)
+                                     .frame(width: 24, height: 24)
+                                
+                                Text("Join r/flipping")
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundColor(.black)
+                                
+                                Spacer()
+                                
+                                Image(systemName: "arrow.right")
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundColor(.black)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 16)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(Color.white)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                            )
+                        }
+                         .frame(maxWidth: .infinity)
+                         .padding(.horizontal, -12) // Match the card width
+                         .padding(.top, 2)
+                    }
+                    .padding(.horizontal, 24)
                     .padding(.bottom, 100) // Bottom padding to account for tab bar
                 }
             }
@@ -8622,8 +11806,286 @@ struct HomeView: View {
         }
         .background(Color.thriftyBackground)
         .navigationBarHidden(true)
+        .onAppear {
+            print("🏠 HomeView appeared - ensuring location tracking is active")
+            // Ensure location tracking is started when home view appears
+            LocationManager.shared.startLocationTracking()
+        }
+        .onChange(of: triggerMapUnlock) { shouldTrigger in
+            if shouldTrigger {
+                triggerMapUnlockAnimation()
+                // Reset the trigger
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    triggerMapUnlock = false
+                }
+            }
+        }
+        
+        // Gift notification overlay - appears over entire screen
+        if actuallyShowPopup {
+            Color.black.opacity(0.3)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    showGiftNotification = false
+                }
+            
+            VStack(spacing: 16) {
+                if showPopupContent {
+                    Text("🎁")
+                        .font(.system(size: 48))
+                        .opacity(showPopupContent ? 1 : 0)
+                        .animation(.easeOut(duration: 0.2).delay(0.1), value: showPopupContent)
+                    
+                    Text("Unlock Secret Feature")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundColor(.black)
+                        .opacity(showPopupContent ? 1 : 0)
+                        .animation(.easeOut(duration: 0.2).delay(0.15), value: showPopupContent)
+                    
+                    // Countdown timer - formatted like the reference image
+                    if !timeRemaining.isEmpty {
+                        CountdownTimerView(
+                            days: countdownDays,
+                            hours: countdownHours,
+                            minutes: countdownMinutes,
+                            seconds: countdownSeconds
+                        )
+                        .padding(.vertical, 8)
+                        .opacity(showPopupContent ? 1 : 0)
+                        .animation(.easeOut(duration: 0.2).delay(0.2), value: showPopupContent)
+                    }
+                    
+                    Text("You're days away from a hidden feature that most users never see.")
+                        .font(.system(size: 16))
+                        .foregroundColor(.black.opacity(0.7))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(nil)
+                        .opacity(showPopupContent ? 1 : 0)
+                        .animation(.easeOut(duration: 0.2).delay(0.25), value: showPopupContent)
+                }
+            }
+            .padding(.horizontal, 32)
+            .padding(.vertical, 24)
+            .background(
+                RoundedRectangle(cornerRadius: 20)
+                    .fill(Color.white)
+                    .shadow(color: .black.opacity(0.2), radius: 20, x: 0, y: 10)
+            )
+            .scaleEffect(popupScale)
+            .offset(popupOffset)
+        }
+        }
+        .onChange(of: showGiftNotification) { isShowing in
+            if isShowing {
+                startCountdownTimer()
+                startPopupAnimation()
+            } else {
+                stopCountdownTimer()
+                resetPopupAnimation()
+            }
+        }
     }
     
+    private func startCountdownTimer() {
+        updateCountdown()
+        countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            updateCountdown()
+        }
+    }
+    
+    private func stopCountdownTimer() {
+        countdownTimer?.invalidate()
+        countdownTimer = nil
+        timeRemaining = ""
+    }
+    
+    private func startPopupAnimation() {
+        // Calculate offset from gift box position to screen center
+        let screenCenter = CGPoint(x: UIScreen.main.bounds.width / 2, y: UIScreen.main.bounds.height / 2)
+        let offsetFromGift = CGSize(
+            width: giftBoxPosition.x - screenCenter.x,
+            height: giftBoxPosition.y - screenCenter.y
+        )
+        
+        // Show the popup overlay
+        actuallyShowPopup = true
+        
+        // Start small and positioned at gift location
+        popupScale = 0.1
+        popupOffset = offsetFromGift
+        showPopupContent = false
+        
+        // Animate to center position with full scale - faster and smoother
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) {
+            popupScale = 1.0
+            popupOffset = .zero
+        }
+        
+        // Show content after box animation completes - shorter delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            showPopupContent = true
+        }
+    }
+    
+    private func resetPopupAnimation() {
+        // Calculate offset back to gift position
+        let screenCenter = CGPoint(x: UIScreen.main.bounds.width / 2, y: UIScreen.main.bounds.height / 2)
+        let offsetToGift = CGSize(
+            width: giftBoxPosition.x - screenCenter.x,
+            height: giftBoxPosition.y - screenCenter.y
+        )
+        
+        // Hide content immediately
+        showPopupContent = false
+        
+        // Animate back to gift position - faster and smoother
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+            popupScale = 0.1
+            popupOffset = offsetToGift
+        }
+        
+        // Hide the popup overlay after animation completes - shorter delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            actuallyShowPopup = false
+        }
+    }
+    
+    private func getAccountCreationDate() -> Date {
+        let userDefaults = UserDefaults.standard
+        let accountCreationKey = "AccountCreationDate"
+        let calendar = Calendar.current
+        
+        if let savedDate = userDefaults.object(forKey: accountCreationKey) as? Date {
+            return savedDate
+        } else {
+            // First time - set account creation date to today
+            let today = calendar.startOfDay(for: Date())
+            userDefaults.set(today, forKey: accountCreationKey)
+            return today
+        }
+    }
+    
+    private func updateCountdown() {
+        let now = Date()
+        let calendar = Calendar.current
+        let accountCreationDate = getAccountCreationDate()
+        
+        // Calculate the 4th day from account creation date (fixed date)
+        guard let targetDate = calendar.date(byAdding: .day, value: 4, to: accountCreationDate) else {
+            timeRemaining = ""
+            return
+        }
+        
+        let timeInterval = targetDate.timeIntervalSince(now)
+        
+        if timeInterval <= 0 {
+            timeRemaining = "Available now!"
+            stopCountdownTimer()
+            return
+        }
+        
+        let totalSeconds = Int(timeInterval)
+        countdownDays = totalSeconds / 86400
+        countdownHours = (totalSeconds % 86400) / 3600
+        countdownMinutes = (totalSeconds % 3600) / 60
+        countdownSeconds = totalSeconds % 60
+        
+        // Keep the old format for the timeRemaining check
+        if countdownDays > 0 {
+            timeRemaining = "\(countdownDays)d \(countdownHours)h \(countdownMinutes)m \(countdownSeconds)s"
+        } else if countdownHours > 0 {
+            timeRemaining = "\(countdownHours)h \(countdownMinutes)m \(countdownSeconds)s"
+        } else if countdownMinutes > 0 {
+            timeRemaining = "\(countdownMinutes)m \(countdownSeconds)s"
+        } else {
+            timeRemaining = "\(countdownSeconds)s"
+        }
+    }
+    
+    // MARK: - Map Unlock Animation
+    func triggerMapUnlockAnimation() {
+        print("🗺️ Starting map unlock animation")
+        
+        // Reset animation states first
+        mapUnlockScale = 0.8
+        mapUnlockOpacity = 0.3
+        unlockAnimationCompleted = false
+        
+        // Show unlock overlay
+        withAnimation(.easeInOut(duration: 0.5)) {
+            showUnlockOverlay = true
+        }
+        
+        // Animate map scale and opacity to full
+        withAnimation(.spring(response: 1.0, dampingFraction: 0.8)) {
+            mapUnlockScale = 1.0
+            mapUnlockOpacity = 1.0
+        }
+        
+        // After 0.8 seconds, animate the lock to unlock
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.7)) {
+                unlockAnimationCompleted = true
+            }
+        }
+        
+        // After 2.5 seconds total, hide overlay and call completion
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            withAnimation(.easeInOut(duration: 0.5)) {
+                showUnlockOverlay = false
+            }
+            
+            // Call completion callback after overlay is hidden
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                onMapUnlockCompleted?()
+            }
+        }
+    }
+    
+    // MARK: - Debug Functions
+    private func triggerDebugMapUnlock() {
+        print("🐛 Debug: Triggering map unlock animation")
+        triggerMapUnlockAnimation()
+    }
+    
+}
+
+// Countdown Timer View with individual boxes
+struct CountdownTimerView: View {
+    let days: Int
+    let hours: Int
+    let minutes: Int
+    let seconds: Int
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            CountdownBox(value: days, label: "DAYS")
+            CountdownBox(value: hours, label: "HOURS")
+            CountdownBox(value: minutes, label: "MINUTES")
+            CountdownBox(value: seconds, label: "SECONDS")
+        }
+    }
+}
+
+// Individual countdown box component
+struct CountdownBox: View {
+    let value: Int
+    let label: String
+    
+    var body: some View {
+        VStack(spacing: 4) {
+            Text(String(format: "%02d", value))
+                .font(.system(size: 24, weight: .bold, design: .monospaced))
+                .foregroundColor(.white)
+                .frame(width: 50, height: 50)
+                .background(Color.black)
+                .cornerRadius(8)
+            
+            Text(label)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.gray)
+        }
+    }
 }
 
 // Preference key for tracking scroll position
@@ -8675,7 +12137,7 @@ struct ProfileView: View {
                             .clipShape(Circle())
                             .overlay(
                                 Circle()
-                                    .stroke(Color.black, lineWidth: 3)
+                                    .stroke(Color(red: 0.83, green: 0.69, blue: 0.52), lineWidth: 3)
                             )
                     } else {
                         Image(profileManager.profilePicture)
@@ -8685,7 +12147,7 @@ struct ProfileView: View {
                             .clipShape(Circle())
                             .overlay(
                                 Circle()
-                                    .stroke(Color.black, lineWidth: 3)
+                                    .stroke(Color(red: 0.83, green: 0.69, blue: 0.52), lineWidth: 3)
                             )
                     }
                 }
@@ -8698,7 +12160,7 @@ struct ProfileView: View {
                     if isEditingName {
                         TextField("username (letters & numbers only)", text: $editedName)
                             .font(.system(size: 28, weight: .bold))
-                            .foregroundColor(.white)
+                            .foregroundColor(.black)
                             .multilineTextAlignment(.center)
                             .focused($isNameFieldFocused)
                             .onSubmit {
@@ -8741,33 +12203,37 @@ struct ProfileView: View {
                         Text("\(songManager.songs.count)")
                             .font(.system(size: 24, weight: .bold))
                                 .foregroundColor(.black)
-                            Text("Songs")
+                            Text("Finds")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundColor(.black.opacity(0.7))
                     }
                     .frame(maxWidth: .infinity)
+                    
+                    // Profit
+                    VStack(spacing: 6) {
+                        let totalProfit = profileManager.calculateTotalProfit(from: songManager)
+                        Text("$\(String(format: "%.0f", totalProfit))")
+                            .font(.system(size: 24, weight: .bold))
+                            .foregroundColor(.black)
+                        Text("Total Profit")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.black.opacity(0.7))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .id(profileManager.profitRefreshTrigger) // Force refresh when trigger changes
                     
                     // Streak
                     VStack(spacing: 6) {
                         Text("\(streakManager.currentStreak)")
                             .font(.system(size: 24, weight: .bold))
                                 .foregroundColor(.black)
-                            Text("Streak")
+                            Text("Thrift Streak")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundColor(.black.opacity(0.7))
                     }
                     .frame(maxWidth: .infinity)
                     
-                    // Words
-                    VStack(spacing: 6) {
-                        Text(totalWords)
-                            .font(.system(size: 24, weight: .bold))
-                                .foregroundColor(.black)
-                            Text("Words")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.black.opacity(0.7))
-                    }
-                    .frame(maxWidth: .infinity)
+
                 }
                 .padding(.horizontal, 20)
             }
@@ -8792,7 +12258,7 @@ struct ProfileView: View {
                                 
                                 // Email contact
                                 Button(action: {
-                                    UIPasteboard.general.string = "support@thrifty.ai"
+                                    UIPasteboard.general.string = "helpthrifty@gmail.com"
                                     showingCopiedFeedback = true
                                     
                                     // Hide the feedback after 2 seconds
@@ -8800,22 +12266,10 @@ struct ProfileView: View {
                                         showingCopiedFeedback = false
                                     }
                                 }) {
-                                    Text(showingCopiedFeedback ? "Copied!" : "support@thrifty.ai")
+                                    Text(showingCopiedFeedback ? "Copied!" : "helpthrifty@gmail.com")
                                         .font(.system(size: 16, weight: .medium))
                                         .foregroundColor(showingCopiedFeedback ? .green : .blue)
                                         .animation(.easeInOut(duration: 0.2), value: showingCopiedFeedback)
-                                }
-                                
-                                // Website contact link
-                                Button(action: {
-                                    if let url = URL(string: "https://thrifty.com/contact-us") {
-                                        UIApplication.shared.open(url)
-                                    }
-                                }) {
-                                    Text("thrifty.com/contact-us")
-                                        .font(.system(size: 16, weight: .medium))
-                                        .foregroundColor(.blue)
-                                        .underline()
                                 }
                             }
                             
@@ -8957,7 +12411,7 @@ struct ProfileView: View {
     
     private func deleteAccount() {
         // Clear all user data
-        profileManager.userName = "@takeflight395"
+                        profileManager.userName = "@thriftuser438"
         profileManager.customProfileImage = nil
         profileManager.totalWordsWritten = 0
         
@@ -9510,7 +12964,9 @@ struct SettingsView: View {
                                 .resizable()
                                 .aspectRatio(contentMode: .fill)
                         )
-                        .cornerRadius(16)
+                        .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
                     }
                 }
                 .padding(.horizontal, 24)
@@ -9618,7 +13074,7 @@ struct AlbumCard: View {
     let showDeleteButton: Bool
     @ObservedObject var audioManager: AudioManager
     @State private var showEditView = false
-    @StateObject private var songAudioManager = AudioManager() // Each song gets its own audio manager
+
     
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -9647,7 +13103,9 @@ struct AlbumCard: View {
                     }
                     .frame(width: 140, height: 140)
                     .clipped()
-                    .cornerRadius(12)
+                    .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
                     .overlay(
                         RoundedRectangle(cornerRadius: 12)
                             .stroke(Color.gray.opacity(0.3), lineWidth: 1)
@@ -9687,33 +13145,17 @@ struct AlbumCard: View {
         .sheet(isPresented: $showEditView) {
             SongEditView(
                 songManager: songManager, 
-                song: song, 
+                song: song,
+                recentFindsManager: nil, // Not needed for regular song editing
                 onDismiss: {
                     showEditView = false
                 }
             )
         }
-        .onAppear {
-            // Load associated instrumental for this specific song when card appears
-            if let associatedInstrumental = song.associatedInstrumental {
-                let sharedManager = SharedInstrumentalManager.shared
-                let instrumentalAudioManager = sharedManager.getAudioManager(for: associatedInstrumental)
-                
-                if let sourcePlayer = instrumentalAudioManager.player {
-                    do {
-                        songAudioManager.player = try AVAudioPlayer(contentsOf: sourcePlayer.url!)
-                        songAudioManager.player?.prepareToPlay()
-                        songAudioManager.duration = sourcePlayer.duration
-                        songAudioManager.audioFileName = associatedInstrumental
-                        print("🎵 AlbumCard loaded associated instrumental: \(associatedInstrumental) for song: \(song.title)")
-                    } catch {
-                        print("❌ AlbumCard failed to load instrumental: \(error)")
-                    }
-                }
-            }
-        }
+
     }
 }
+
 
 // Instrumental Selector View - For choosing from uploaded instrumentals
 struct InstrumentalSelectorView: View {
@@ -9766,7 +13208,9 @@ struct InstrumentalSelectorView: View {
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
                             .background(Color.white.opacity(0.2))
-                            .cornerRadius(16)
+                            .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
                         }
                     }
                     .padding(.horizontal, 24)
@@ -9804,7 +13248,9 @@ struct InstrumentalSelectorView: View {
                             .padding(.horizontal, 24)
                             .padding(.vertical, 12)
                             .background(Color.white.opacity(0.2))
-                            .cornerRadius(12)
+                            .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
                         }
                         .padding(.top, 8)
                         
@@ -9979,6 +13425,7 @@ struct InstrumentalSelectorCard: View {
 struct SongEditView: View {
     @ObservedObject var songManager: SongManager
     @State private var song: Song
+    var recentFindsManager: RecentFindsManager?
     @StateObject private var serpAPIService = SerpAPIService()
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var showingPhotoPicker = false
@@ -9994,47 +13441,70 @@ struct SongEditView: View {
     @StateObject private var audioManager = AudioManager()
     @State private var displayedVisualMatches: [VisualMatch] = []
     @State private var displayedShoppingResults: [ShoppingResult] = []
-    @State private var aiAnalysis: String = ""
-    @State private var isAnalyzing: Bool = false
-    @State private var displayedAnalysis: String = ""
-    @State private var typingTimer: Timer?
+    
+    // Persistent deletion tracking
+    @State private var deletedVisualMatchIds: Set<String> = []
+    @State private var deletedShoppingResultIds: Set<String> = []
+    
+    // Info popup state
+    @State private var showingAveragePriceInfo = false
+    
+    // Swipe hint animation states
+    @State private var showSwipeHint = false
+    @State private var swipeHintOffset: CGFloat = 0
+    @State private var hasShownSwipeHint = false
+    
+    // Confetti animation states
+    @State private var trigger = 0
+    @State private var isViewFullyLoaded = false
+    @State private var shouldTriggerConfettiWhenLoaded = false
     @State private var expandedImageURL: String?
     @State private var showingExpandedImage = false
     @State private var clothingDetails: ClothingDetails?
     @State private var isAnalyzingClothing = false
+    @State private var isScrolling = false
+    @State private var hasDeletedItems = false
     
-    init(songManager: SongManager, song: Song, onDismiss: @escaping () -> Void) {
+    init(songManager: SongManager, song: Song, recentFindsManager: RecentFindsManager?, onDismiss: @escaping () -> Void) {
         self.songManager = songManager
+        self.recentFindsManager = recentFindsManager
         self.onDismiss = onDismiss
         self._song = State(initialValue: song)
         
-        print("🔧 SongEditView initialized for song: \(song.title)")
+        print("🔧 SongEditView initialized for song: '\(song.title)' (ID: \(song.id))")
+        
+        // Check for potential duplicate initialization
+        if song.title == "Analyzing..." {
+            print("📊 Thrift Analysis song initialized - ID: \(song.id)")
+        }
     }
     
     // MARK: - Price Helper Functions
     private func formatPriceToUSD(_ price: String?) -> String? {
         guard let priceString = price else { return nil }
         
-        // Remove asterisk and other symbols
+        // Remove currency symbols but preserve commas and periods
         let cleanPrice = priceString.replacingOccurrences(of: "*", with: "")
                                    .replacingOccurrences(of: "CHF", with: "")
                                    .replacingOccurrences(of: "€", with: "")
                                    .replacingOccurrences(of: "£", with: "")
                                    .trimmingCharacters(in: .whitespacesAndNewlines)
         
-        // Extract numeric value
-        let numberFormatter = NumberFormatter()
-        numberFormatter.numberStyle = .decimal
+        // Use regex to find the first price pattern (handles commas properly)
+        let pattern = #"(\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d+(?:\.\d{2})?)"#
         
-        // Try to extract number from string
-        let components = cleanPrice.components(separatedBy: CharacterSet.decimalDigits.inverted)
-        let numbers = components.filter { !$0.isEmpty }
-        
-        if let firstNumber = numbers.first, let value = Double(firstNumber) {
-            // Simple conversion - in real app you'd use live exchange rates
+        if let regex = try? NSRegularExpression(pattern: pattern, options: []),
+           let match = regex.firstMatch(in: cleanPrice, options: [], range: NSRange(location: 0, length: cleanPrice.count)) {
+            
+            let matchString = (cleanPrice as NSString).substring(with: match.range)
+            
+            // Remove commas for Double conversion
+            let numberString = matchString.replacingOccurrences(of: ",", with: "")
+            
+            if let value = Double(numberString) {
+                // Apply currency conversion
             var usdValue = value
             
-            // Basic currency conversion (approximate)
             if priceString.contains("CHF") {
                 usdValue = value * 1.1 // CHF to USD
             } else if priceString.contains("€") {
@@ -10043,25 +13513,196 @@ struct SongEditView: View {
                 usdValue = value * 1.25 // GBP to USD
             }
             
-            return "$\(String(format: "%.2f", usdValue))"
+                return "$\(String(format: "%.0f", usdValue))" // No decimals for cleaner display
+            }
         }
         
         return cleanPrice.isEmpty ? nil : "$\(cleanPrice)"
     }
     
+    // MARK: - Price Calculation Functions
+    
+    private func calculateOverallAveragePrice() -> Double? {
+        guard let marketData = marketData else { return nil }
+        
+        var allPrices: [Double] = []
+        
+        // Collect prices from visual matches (both available and sold)
+        if let visualMatches = marketData.visualMatches {
+            let notDeletedMatches = getFilteredVisualMatches(visualMatches)
+            let pricesFromVisual = notDeletedMatches.compactMap { match -> Double? in
+                if let extractedValue = match.price?.extractedValue, extractedValue > 0 {
+                    return extractedValue
+                } else if let priceString = match.price?.value {
+                    return extractNumericPrice(priceString)
+                }
+                return nil
+            }
+            allPrices.append(contentsOf: pricesFromVisual)
+        }
+        
+        // Collect prices from shopping results (both available and sold)
+        if let shoppingResults = marketData.shoppingResults {
+            let notDeletedResults = getFilteredShoppingResults(shoppingResults)
+            let pricesFromShopping = notDeletedResults.compactMap { result -> Double? in
+                if let extractedPrice = result.extractedPrice, extractedPrice > 0 {
+                    return extractedPrice
+                } else if let priceString = result.price {
+                    return extractNumericPrice(priceString)
+                }
+                return nil
+            }
+            allPrices.append(contentsOf: pricesFromShopping)
+        }
+        
+        // Calculate average
+        guard !allPrices.isEmpty else { return nil }
+        return allPrices.reduce(0, +) / Double(allPrices.count)
+    }
+    
+    // MARK: - Confetti Animation Functions
+    
+    private func triggerConfetti() {
+        if isViewFullyLoaded {
+            // View is fully loaded, trigger confetti immediately
+            trigger += 1
+        } else {
+            // View is still loading, set flag to trigger when loaded
+            shouldTriggerConfettiWhenLoaded = true
+        }
+    }
+    
+    // MARK: - Swipe Hint Animation Functions
+    
+    private func showSwipeHintAnimation() {
+        // Only show hint once per session and if there are items
+        guard !hasShownSwipeHint else { return }
+        
+        // Delay the hint so user can see the items first
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            withAnimation(.easeInOut(duration: 0.8)) {
+                self.swipeHintOffset = -80 // Slide left to reveal delete button
+                self.showSwipeHint = true
+            }
+            
+            // Hold the position for a moment to show the delete button
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                withAnimation(.easeInOut(duration: 0.8)) {
+                    self.swipeHintOffset = 0 // Slide back to original position
+                }
+                
+                // Hide hint after animation
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    self.showSwipeHint = false
+                    self.hasShownSwipeHint = true
+                }
+            }
+        }
+    }
+    
+    // MARK: - Deletion Management Functions
+    
+    private func generateVisualMatchId(_ match: VisualMatch) -> String {
+        return "\(match.position ?? 0)_\(match.title ?? "unknown")_\(match.source ?? "")"
+    }
+    
+    private func generateShoppingResultId(_ result: ShoppingResult) -> String {
+        return "\(result.position ?? 0)_\(result.title ?? "unknown")_\(result.source ?? "")"
+    }
+    
+    private func loadDeletions() {
+        let songId = song.id.uuidString
+        
+        if let deletedVisual = UserDefaults.standard.array(forKey: "deletedVisualMatches_\(songId)") as? [String] {
+            deletedVisualMatchIds = Set(deletedVisual)
+        }
+        
+        if let deletedShopping = UserDefaults.standard.array(forKey: "deletedShoppingResults_\(songId)") as? [String] {
+            deletedShoppingResultIds = Set(deletedShopping)
+        }
+        
+        print("🗑️ Loaded \(deletedVisualMatchIds.count) deleted visual matches and \(deletedShoppingResultIds.count) deleted shopping results for song: \(song.title)")
+    }
+    
+    private func saveDeletions() {
+        let songId = song.id.uuidString
+        
+        UserDefaults.standard.set(Array(deletedVisualMatchIds), forKey: "deletedVisualMatches_\(songId)")
+        UserDefaults.standard.set(Array(deletedShoppingResultIds), forKey: "deletedShoppingResults_\(songId)")
+        
+        print("🗑️ Saved \(deletedVisualMatchIds.count) deleted visual matches and \(deletedShoppingResultIds.count) deleted shopping results for song: \(song.title)")
+    }
+    
+    private func deleteVisualMatch(_ match: VisualMatch, at index: Int) {
+        let matchId = generateVisualMatchId(match)
+        deletedVisualMatchIds.insert(matchId)
+        saveDeletions()
+        
+        // Set flag to prevent auto-loading more results
+        hasDeletedItems = true
+        
+        // Remove from displayed array with animation
+        withAnimation(.easeInOut(duration: 0.3)) {
+            if index < displayedVisualMatches.count {
+                displayedVisualMatches.remove(at: index)
+            }
+        }
+        
+        print("🗑️ Deleted visual match: \(match.title ?? "Unknown") from \(match.source ?? "Unknown source")")
+    }
+    
+    private func deleteShoppingResult(_ result: ShoppingResult, at index: Int) {
+        let resultId = generateShoppingResultId(result)
+        deletedShoppingResultIds.insert(resultId)
+        saveDeletions()
+        
+        // Set flag to prevent auto-loading more results
+        hasDeletedItems = true
+        
+        // Remove from displayed array with animation
+        withAnimation(.easeInOut(duration: 0.3)) {
+            if index < displayedShoppingResults.count {
+                displayedShoppingResults.remove(at: index)
+            }
+        }
+        
+        print("🗑️ Deleted shopping result: \(result.title ?? "Unknown") from \(result.source ?? "Unknown source")")
+    }
+    
+    private func getFilteredVisualMatches(_ matches: [VisualMatch]) -> [VisualMatch] {
+        return matches.filter { match in
+            let matchId = generateVisualMatchId(match)
+            return !deletedVisualMatchIds.contains(matchId)
+        }
+    }
+    
+    private func getFilteredShoppingResults(_ results: [ShoppingResult]) -> [ShoppingResult] {
+        return results.filter { result in
+            let resultId = generateShoppingResultId(result)
+            return !deletedShoppingResultIds.contains(resultId)
+        }
+    }
+    
     private func extractNumericPrice(_ price: String?) -> Double? {
         guard let priceString = price else { return nil }
         
-        // Remove all non-numeric characters except decimal point
+        // Remove currency symbols but preserve commas and periods
         let cleanPrice = priceString.replacingOccurrences(of: "*", with: "")
                                    .replacingOccurrences(of: "CHF", with: "")
                                    .replacingOccurrences(of: "€", with: "")
                                    .replacingOccurrences(of: "£", with: "")
                                    .replacingOccurrences(of: "$", with: "")
         
-        // Extract first numeric value
-        let components = cleanPrice.components(separatedBy: CharacterSet.decimalDigits.union(CharacterSet(charactersIn: ".")).inverted)
-        let numberString = components.joined()
+        // Use regex to find the first price pattern (handles commas properly)
+        let pattern = #"(\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d+(?:\.\d{2})?)"#
+        
+        if let regex = try? NSRegularExpression(pattern: pattern, options: []),
+           let match = regex.firstMatch(in: cleanPrice, options: [], range: NSRange(location: 0, length: cleanPrice.count)) {
+            
+            let matchString = (cleanPrice as NSString).substring(with: match.range)
+            
+            // Remove commas for Double conversion
+            let numberString = matchString.replacingOccurrences(of: ",", with: "")
         
         if let value = Double(numberString) {
             // Apply currency conversion
@@ -10076,6 +13717,7 @@ struct SongEditView: View {
             }
             
             return usdValue
+            }
         }
         
         return nil
@@ -10083,13 +13725,33 @@ struct SongEditView: View {
 
     // MARK: - Clothing Details Analysis
     private func analyzeClothingDetails() {
-        guard !isAnalyzingClothing, let customImage = song.customImage else { 
-            print("🔍 Clothing Details Analysis guard failed - analyzing: \(isAnalyzingClothing), image: \(song.customImage != nil)")
+        let allImages = song.allImages
+        guard !isAnalyzingClothing, !allImages.isEmpty else { 
+            print("🔍 Clothing Details Analysis guard failed - analyzing: \(isAnalyzingClothing), images: \(allImages.count)")
             return 
         }
         
-        let allImages = song.allImages
         print("🔍 Starting Clothing Details Analysis with \(allImages.count) images...")
+        
+        // Check both caches first to avoid duplicate API calls
+        let cacheKey = "clothing_details_\(song.id.uuidString)_\(allImages.count)"
+        
+        // First check the image-based cache from background analysis
+        if let firstImage = allImages.first,
+           let cachedDetails = AnalysisResultsCache.shared.getClothingDetails(for: firstImage) {
+            print("📦 Loading Clothing Details from background analysis cache")
+            self.clothingDetails = cachedDetails
+            return
+        }
+        
+        // Then check traditional cache
+        if let cachedResponse = MarketDataCache.shared.getOpenAIResponse(for: "clothing_details", input: cacheKey) {
+            print("📦 Loading Clothing Details from traditional cache")
+            let details = parseClothingDetailsResponse(cachedResponse)
+            self.clothingDetails = details
+            return
+        }
+        
         isAnalyzingClothing = true
         clothingDetails = nil
         
@@ -10120,7 +13782,15 @@ struct SongEditView: View {
                     )
                 }
                 
+                // Save to cache
+                MarketDataCache.shared.saveOpenAIResponse(response, for: "clothing_details", input: cacheKey, prompt: prompt)
+                
                 let details = parseClothingDetailsResponse(response)
+                
+                // Also save to image-based cache for cross-referencing
+                if let firstImage = allImages.first {
+                    AnalysisResultsCache.shared.storeClothingDetails(details, for: firstImage)
+                }
                 
                 await MainActor.run {
                     print("🔍 Clothing Details Analysis completed: \(details)")
@@ -10154,7 +13824,8 @@ struct SongEditView: View {
                         designerTier: "N/A",
                         era: "N/A",
                         colors: ["Network Error"],
-                        fabricComposition: [FabricComponent(material: "Check Connection", percentage: 100)]
+                        fabricComposition: [FabricComponent(material: "Check Connection", percentage: 100)],
+                        isAuthentic: nil
                     )
                     self.isAnalyzingClothing = false
                 }
@@ -10182,10 +13853,18 @@ struct SongEditView: View {
             "fabric_composition": [
                 {"material": "Cotton", "percentage": 80},
                 {"material": "Polyester", "percentage": 20}
-            ]
+            ],
+            "is_authentic": true
         }
         
         Be specific and accurate. If unsure about fabric composition, provide best estimate based on visual appearance and typical materials for this type of garment.
+        
+        For authenticity assessment, look for signs of authenticity such as:
+        - Quality of stitching, materials, and construction
+        - Brand labels, tags, and hardware that match authentic standards
+        - Overall craftsmanship and attention to detail
+        - Any obvious signs of counterfeiting or poor quality reproduction
+        Set "is_authentic" to true if the item appears genuine, false if it appears to be a counterfeit or poor quality reproduction.
         """
     }
     
@@ -10193,18 +13872,35 @@ struct SongEditView: View {
         // Try to extract JSON from the response
         let cleanResponse = response.trimmingCharacters(in: .whitespacesAndNewlines)
         
+        // Safety check for empty response
+        guard !cleanResponse.isEmpty else {
+            print("⚠️ Empty response received, using fallback")
+            return createFallbackClothingDetails()
+        }
+        
         // Look for JSON content between { and }
         if let startIndex = cleanResponse.firstIndex(of: "{"),
-           let endIndex = cleanResponse.lastIndex(of: "}") {
+           let endIndex = cleanResponse.lastIndex(of: "}"),
+           startIndex <= endIndex {
+            
+            // Safe string slicing with bounds check
             let jsonString = String(cleanResponse[startIndex...endIndex])
             
             if let data = jsonString.data(using: .utf8),
                let details = try? JSONDecoder().decode(ClothingDetails.self, from: data) {
                 return details
+            } else {
+                print("⚠️ Failed to parse JSON: \(jsonString.prefix(100))")
             }
+        } else {
+            print("⚠️ No valid JSON brackets found in response: \(cleanResponse.prefix(100))")
         }
         
         // Fallback if JSON parsing fails
+        return createFallbackClothingDetails()
+    }
+    
+    private func createFallbackClothingDetails() -> ClothingDetails {
         return ClothingDetails(
             category: "Unknown",
             style: "Modern",
@@ -10213,149 +13909,123 @@ struct SongEditView: View {
             designerTier: "Unknown",
             era: "Contemporary",
             colors: ["Unknown"],
-            fabricComposition: [FabricComponent(material: "Unknown", percentage: 100)]
+            fabricComposition: [FabricComponent(material: "Unknown", percentage: 100)],
+            isAuthentic: nil
         )
     }
-
-    // MARK: - AI Analysis Functions
-    private func startAIAnalysis() {
-        guard !isAnalyzing else { 
-            print("🔍 AI Analysis already running, skipping")
+    
+    // MARK: - Title Generation
+    private func generateItemTitle() {
+        let allImages = song.allImages
+        guard !allImages.isEmpty else { 
+            print("🏷️ No images available for title generation")
             return 
         }
         
-        print("🔍 Starting AI Style Analysis...")
-        isAnalyzing = true
-        displayedAnalysis = ""
-        aiAnalysis = ""
+        print("🏷️ Generating title with \(allImages.count) images...")
+        
+        // Check cache first
+        let cacheKey = "title_generation_\(song.id.uuidString)_\(allImages.count)"
+        if let cachedResponse = MarketDataCache.shared.getOpenAIResponse(for: "title_generation", input: cacheKey) {
+            print("📦 Loading title from cache")
+            updateSongTitle(with: cachedResponse.trimmingCharacters(in: .whitespacesAndNewlines))
+            return
+        }
         
         Task {
             do {
-                let prompt = createAnalysisPrompt()
-                print("🔍 AI Style Analysis prompt: \(prompt.prefix(100))...")
+                let prompt = createTitleGenerationPrompt()
+                print("🏷️ Title generation prompt: \(prompt.prefix(100))...")
                 
-                // Use GPT-4 Vision if we have images, otherwise text-only
-                let allImages = song.allImages
-                let response: String
+                let response = try await OpenAIService.shared.generateVisionCompletion(
+                    prompt: prompt,
+                    images: allImages,
+                    maxTokens: 50,
+                    temperature: 0.7
+                )
                 
-                if !allImages.isEmpty {
-                    print("🔍 Using Vision API for style analysis with \(allImages.count) images")
-                    print("🔍 Style Analysis Prompt: \(prompt)")
-                    response = try await OpenAIService.shared.generateVisionCompletion(
-                        prompt: prompt,
-                        images: allImages,
-                        maxTokens: 400,
-                        temperature: 0.7
-                    )
-                    print("🔍 Style Analysis Response: \(response)")
-                } else {
-                    print("🔍 Using text-only API for style analysis")
-                    response = try await OpenAIService.shared.generateCompletion(
-                        prompt: prompt,
-                        model: Config.defaultModel,
-                        maxTokens: 400,
-                        temperature: 0.7
-                    )
-                }
+                print("🏷️ Title generation response: \(response)")
+                
+                // Cache the response
+                MarketDataCache.shared.saveOpenAIResponse(response, for: "title_generation", input: cacheKey, prompt: prompt)
+                
+                // Clean up the response and update title
+                let cleanTitle = response.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "\"", with: "")
+                    .replacingOccurrences(of: "Title:", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 
                 await MainActor.run {
-                    print("🔍 AI Style Analysis completed: \(response.prefix(100))...")
-                    self.aiAnalysis = response
-                    self.isAnalyzing = false
-                    self.startTypingAnimation()
+                    updateSongTitle(with: cleanTitle)
                 }
+                
             } catch {
+                print("❌ Title generation error: \(error)")
                 await MainActor.run {
-                    print("❌ AI Style Analysis error: \(error)")
-                    
-                    // Provide specific error messages for network issues
-                    let errorMessage: String
-                    if let urlError = error as? URLError {
-                        switch urlError.code {
-                        case .networkConnectionLost, .timedOut:
-                            errorMessage = "Network connection lost. Please check your internet and try again."
-                        case .notConnectedToInternet:
-                            errorMessage = "No internet connection. Please connect to the internet and try again."
-                        default:
-                            errorMessage = "Network error occurred. Please try again."
-                        }
-                    } else {
-                        errorMessage = "Sorry, I couldn't analyze the clothing piece at the moment. Please try again."
-                    }
-                    
-                    self.aiAnalysis = errorMessage
-                    self.isAnalyzing = false
-                    self.startTypingAnimation()
+                    // Use a more descriptive fallback based on the item type
+                    let fallbackTitle = generateFallbackTitle()
+                    updateSongTitle(with: fallbackTitle)
                 }
             }
         }
     }
     
-    private func createAnalysisPrompt() -> String {
-        let allImages = song.allImages
-        var prompt = ""
+    private func createTitleGenerationPrompt() -> String {
+        let imageCount = song.allImages.count
+        let imageContext = imageCount > 1 ? 
+            "these \(imageCount) images of an item" : 
+            "this image of an item"
+            
+        return """
+        Based on \(imageContext), generate a short, catchy title (2-4 words max) that describes what this item is.
         
-        if !allImages.isEmpty {
-            // Vision API prompt - explicitly tell AI to look at the images
-            prompt = """
-            You are a fashion expert. Look carefully at the provided images of this clothing piece and analyze what you see.
-            
-            Examine the images for:
-            - Brand logos, tags, or labels
-            - Style, cut, and design details
-            - Fabric texture and quality
-            - Any identifying marks or patterns
-            
-            Based on your visual analysis, provide exactly 3 sentences covering:
-            
-            **Collection & Release**: Identify the specific brand collection, season, or release year if recognizable from the images.
-            **Pricing**: Mention the most wanted sizes and current market value/demand for this type of item.
-            
-            Be specific about what you can see in the images. If you cannot identify the exact brand from the visual details, mention the style category and provide general market insights.
-            """
-        } else {
-            // Text-only prompt
-            prompt = """
-            You are a fashion expert. Analyze this clothing piece and provide exactly 3 sentences covering:
-            
-            **Collection & Release**: Identify the specific brand collection, season, or release year if recognizable.
-            **Pricing**: Mention the most wanted sizes and current market value/demand.
-            
-            Be concise and focus only on these two areas. Maximum 3 sentences total.
-            """
-        }
+        Examples of good titles:
+        - "Vintage Leather Jacket"
+        - "Designer Handbag"
+        - "Retro Denim Jeans"
+        - "Silk Floral Dress"
+        - "Golden Watch"
+        - "Sneaker Collection"
+        - "Vintage Find"
+        - "Fashion Item"
+        - "Thrift Treasure"
         
-        if !song.title.isEmpty && song.title != "Untitled Song" {
-            prompt += "\n\nItem/Context: \(song.title)"
-        }
+        Focus on:
+        - Type of item (jacket, bag, shoes, etc.)
+        - Notable style or era if visible (vintage, retro, modern)
+        - Key material if obvious (leather, denim, silk)
+        - If unclear, use descriptive terms like "Vintage Find", "Fashion Item", or "Unique Piece"
         
-        return prompt
+        IMPORTANT: Always return a title. Never return empty text.
+        Return ONLY the title, no extra text or quotes.
+        """
     }
     
-    private func startTypingAnimation() {
-        guard !aiAnalysis.isEmpty else { return }
-        
-        displayedAnalysis = ""
-        var currentIndex = 0
-        
-        typingTimer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { timer in
-            if currentIndex < aiAnalysis.count {
-                let index = aiAnalysis.index(aiAnalysis.startIndex, offsetBy: currentIndex)
-                displayedAnalysis = String(aiAnalysis[..<index])
-                currentIndex += 1
-            } else {
-                timer.invalidate()
-                displayedAnalysis = aiAnalysis
-            }
-        }
+    private func updateSongTitle(with newTitle: String) {
+        let finalTitle = newTitle.isEmpty ? generateFallbackTitle() : newTitle
+        song.title = finalTitle
+        songManager.updateSong(song)
+        print("🏷️ Updated song title to: '\(finalTitle)'")
     }
     
-    private func stopTypingAnimation() {
-        typingTimer?.invalidate()
-        typingTimer = nil
-        if !aiAnalysis.isEmpty {
-            displayedAnalysis = aiAnalysis
-        }
+    private func generateFallbackTitle() -> String {
+        // Generate a more descriptive fallback title based on available data
+        let fallbackTitles = [
+            "Vintage Find",
+            "Designer Item",
+            "Thrift Treasure",
+            "Unique Piece",
+            "Retro Item",
+            "Fashion Find",
+            "Collectible Item",
+            "Antique Piece",
+            "Stylish Find",
+            "Quality Item"
+        ]
+        
+        // Use a semi-random selection based on the song ID to ensure consistency
+        let index = abs(song.id.hashValue) % fallbackTitles.count
+        return fallbackTitles[index]
     }
 
     // MARK: - Display Items Management
@@ -10364,31 +14034,605 @@ struct SongEditView: View {
         
         // Update visual matches
         if let visualMatches = marketData.visualMatches, !visualMatches.isEmpty {
-            let visualMatchesWithPrices = visualMatches.filter { result in
+            // First filter out deleted items, then filter for prices
+            let notDeletedMatches = getFilteredVisualMatches(visualMatches)
+            let visualMatchesWithPrices = notDeletedMatches.filter { result in
                 result.price?.extractedValue != nil && (result.price?.extractedValue ?? 0) > 0
             }
             
-            if displayedVisualMatches.isEmpty && !visualMatchesWithPrices.isEmpty {
-                displayedVisualMatches = Array(visualMatchesWithPrices.prefix(5))
-            }
+            // Always update with filtered results - remove isEmpty condition
+            displayedVisualMatches = Array(visualMatchesWithPrices.prefix(10))
         }
         
         // Update shopping results
         if let shoppingResults = marketData.shoppingResults, !shoppingResults.isEmpty {
-            let shoppingResultsWithPrices = shoppingResults.filter { result in
+            // First filter out deleted items, then filter for prices
+            let notDeletedResults = getFilteredShoppingResults(shoppingResults)
+            let shoppingResultsWithPrices = notDeletedResults.filter { result in
                 (result.extractedPrice != nil && (result.extractedPrice ?? 0) > 0) || 
                 (result.price != nil && result.price != "N/A" && !result.price!.isEmpty)
             }
             
-            if displayedShoppingResults.isEmpty && !shoppingResultsWithPrices.isEmpty {
-                displayedShoppingResults = Array(shoppingResultsWithPrices.prefix(5))
-            }
+            // Always update with filtered results - remove isEmpty condition
+            displayedShoppingResults = Array(shoppingResultsWithPrices.prefix(10))
+        }
+    }
+    
+    // MARK: - Sample Market Data for Default Songs
+    private func createSampleMarketData(for songTitle: String) -> SerpSearchResult? {
+        switch songTitle {
+        case "Nike Air Jordan 1's - T-Scott":
+            return SerpSearchResult(
+                searchMetadata: SearchMetadata(status: "Success", createdAt: "2024-01-20T10:30:00Z"),
+                searchParameters: SearchParameters(engine: "google_shopping", query: "vintage leather jacket", condition: "used"),
+                searchInformation: SearchInformation(totalResults: "1,234", queryDisplayed: "vintage leather jacket"),
+                shoppingResults: [
+                    ShoppingResult(
+                        position: 1,
+                        title: "Vintage 80s Black Leather Moto Jacket",
+                        price: "$145",
+                        extractedPrice: 145.0,
+                        link: "https://www.etsy.com/listing/vintage-leather-jacket",
+                        source: "Etsy",
+                        rating: 4.8,
+                        reviews: 24,
+                        thumbnail: "https://example.com/vintage-leather.jpg",
+                        condition: "used"
+                    ),
+                    ShoppingResult(
+                        position: 2,
+                        title: "Authentic Vintage Brown Leather Jacket",
+                        price: "$180",
+                        extractedPrice: 180.0,
+                        link: "https://www.depop.com/products/vintage-leather",
+                        source: "Depop",
+                        rating: 4.9,
+                        reviews: 16,
+                        thumbnail: "https://example.com/brown-leather.jpg",
+                        condition: "used"
+                    ),
+                    ShoppingResult(
+                        position: 3,
+                        title: "Vintage Leather Bomber Jacket 90s",
+                        price: "$120",
+                        extractedPrice: 120.0,
+                        link: "https://www.vinted.com/items/vintage-bomber",
+                        source: "Vinted",
+                        rating: 4.6,
+                        reviews: 31,
+                        thumbnail: "https://example.com/bomber-leather.jpg",
+                        condition: "used"
+                    )
+                ],
+                organicResults: nil,
+                imageResults: nil,
+                visualMatches: [
+                    // IN STOCK ITEMS
+                    VisualMatch(
+                        position: 1,
+                        title: "Nike Air Jordan 1 Retro High Dark",
+                        link: "",
+                        source: "Thrift Finds",
+                        sourceIcon: nil,
+                        rating: 4.7,
+                        reviews: 42,
+                        price: PriceInfo(value: "$225", extractedValue: 225.0, currency: "USD"),
+                        inStock: true,
+                        condition: "excellent",
+                        thumbnail: "t1",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "t1",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    ),
+                    VisualMatch(
+                        position: 2,
+                        title: "Nike Air Jordan 1 Retro High OG \"Dark\"",
+                        link: "",
+                        source: "Poshmark",
+                        sourceIcon: nil,
+                        rating: 4.5,
+                        reviews: 28,
+                        price: PriceInfo(value: "$234", extractedValue: 234.0, currency: "USD"),
+                        inStock: true,
+                        condition: "good",
+                        thumbnail: "t2",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "t2",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    ),
+                    VisualMatch(
+                        position: 3,
+                        title: "Nike Air Jordan 1 Retro OG High Dark Brown",
+                        link: "",
+                        source: "Mercari",
+                        sourceIcon: nil,
+                        rating: 4.8,
+                        reviews: 15,
+                        price: PriceInfo(value: "$280", extractedValue: 280.0, currency: "USD"),
+                        inStock: true,
+                        condition: "very good",
+                        thumbnail: "t3",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "t3",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    ),
+                    // SOLD OUT ITEMS
+                    VisualMatch(
+                        position: 4,
+                        title: "Nike Air Jordan 1 Retro OG High Top",
+                        link: "",
+                        source: "eBay",
+                        sourceIcon: nil,
+                        rating: 4.9,
+                        reviews: 67,
+                        price: PriceInfo(value: "$225", extractedValue: 225.0, currency: "USD"),
+                        inStock: false,
+                        condition: "excellent",
+                        thumbnail: "t4",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "t4",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    ),
+                    VisualMatch(
+                        position: 5,
+                        title: "Nike Air Jordan 1 High",
+                        link: "",
+                        source: "Grailed",
+                        sourceIcon: nil,
+                        rating: 5.0,
+                        reviews: 34,
+                        price: PriceInfo(value: "$195", extractedValue: 195.0, currency: "USD"),
+                        inStock: false,
+                        condition: "mint",
+                        thumbnail: "t5",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "t5",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    ),
+                    VisualMatch(
+                        position: 6,
+                        title: "Size 11 - Air Jordan 1 Retro OG High Dark Brown",
+                        link: "",
+                        source: "Vestiaire",
+                        sourceIcon: nil,
+                        rating: 4.6,
+                        reviews: 23,
+                        price: PriceInfo(value: "$175", extractedValue: 175.0, currency: "USD"),
+                        inStock: false,
+                        condition: "good",
+                        thumbnail: "t6",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "t6",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    )
+                ],
+                error: nil
+            )
+            
+        case "Vintage Ecko Navy Blue Hoodie":
+            return SerpSearchResult(
+                searchMetadata: SearchMetadata(status: "Success", createdAt: "2024-01-20T10:30:00Z"),
+                searchParameters: SearchParameters(engine: "google_shopping", query: "Vintage Ecko Navy Blue Hoodie", condition: "used"),
+                searchInformation: SearchInformation(totalResults: "2,567", queryDisplayed: "Vintage Ecko Navy Blue Hoodie"),
+                shoppingResults: [
+                    ShoppingResult(
+                        position: 1,
+                        title: "Vintage Ecko Unltd. Hoodie Men's XXL",
+                        price: "$30",
+                        extractedPrice: 220.0,
+                        link: "",
+                        source: "StockX",
+                        rating: 4.9,
+                        reviews: 156,
+                        thumbnail: "https://example.com/jordan4-white.jpg",
+                        condition: "used"
+                    ),
+                    ShoppingResult(
+                        position: 2,
+                        title: "Ecko Unltd. Hoodie Men's XL",
+                        price: "$45",
+                        extractedPrice: 280.0,
+                        link: "",
+                        source: "GOAT",
+                        rating: 4.8,
+                        reviews: 203,
+                        thumbnail: "https://example.com/jordan4-bred.jpg",
+                        condition: "used"
+                    ),
+                    ShoppingResult(
+                        position: 3,
+                        title: "VTG Ecko Unltd Hoodie Men Medium",
+                        price: "$40",
+                        extractedPrice: 195.0,
+                        link: "",
+                        source: "eBay",
+                        rating: 4.6,
+                        reviews: 89,
+                        thumbnail: "https://example.com/jordan4-blue.jpg",
+                        condition: "used"
+                    )
+                ],
+                organicResults: nil,
+                imageResults: nil,
+                visualMatches: [
+                    // IN STOCK ITEMS
+                    VisualMatch(
+                        position: 1,
+                        title: "Ecko Unltd Vintage Hoodie Men",
+                        link: "",
+                        source: "Grailed",
+                        sourceIcon: nil,
+                        rating: 4.8,
+                        reviews: 67,
+                        price: PriceInfo(value: "$30", extractedValue: 30.0, currency: "USD"),
+                        inStock: true,
+                        condition: "good",
+                        thumbnail: "e1",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "e1",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    ),
+                    VisualMatch(
+                        position: 2,
+                        title: "Vintage Ecko Unltd Spellout Rhino Navy Blue",
+                        link: "",
+                        source: "eBay",
+                        sourceIcon: nil,
+                        rating: 4.7,
+                        reviews: 124,
+                        price: PriceInfo(value: "$29", extractedValue: 29.0, currency: "USD"),
+                        inStock: true,
+                        condition: "very good",
+                        thumbnail: "e2",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "e2",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    ),
+                    VisualMatch(
+                        position: 3,
+                        title: "Ecko Unltd Rhino Navy Blue",
+                        link: "",
+                        source: "GOAT",
+                        sourceIcon: nil,
+                        rating: 4.9,
+                        reviews: 89,
+                        price: PriceInfo(value: "$34", extractedValue: 34.0, currency: "USD"),
+                        inStock: true,
+                        condition: "excellent",
+                        thumbnail: "e3",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "e3",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    ),
+                    // SOLD OUT ITEMS
+                    VisualMatch(
+                        position: 4,
+                        title: "Vintage Y2K Ecko Hoodie Sweatshirt Mens",
+                        link: "",
+                        source: "StockX",
+                        sourceIcon: nil,
+                        rating: 5.0,
+                        reviews: 156,
+                        price: PriceInfo(value: "$45", extractedValue: 45.0, currency: "USD"),
+                        inStock: false,
+                        condition: "deadstock",
+                        thumbnail: "e4",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "e4",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    ),
+                    VisualMatch(
+                        position: 5,
+                        title: "Ecko Hoodie Hoodie Mens L",
+                        link: "",
+                        source: "Flight Club",
+                        sourceIcon: nil,
+                        rating: 4.8,
+                        reviews: 203,
+                        price: PriceInfo(value: "$40", extractedValue: 40.0, currency: "USD"),
+                        inStock: false,
+                        condition: "mint",
+                        thumbnail: "e5",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "e5",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    ),
+                    VisualMatch(
+                        position: 6,
+                        title: "2000's Ecko Hoodie XL Mens",
+                        link: "",
+                        source: "Kixify",
+                        sourceIcon: nil,
+                        rating: 4.6,
+                        reviews: 78,
+                        price: PriceInfo(value: "$30", extractedValue: 30.0, currency: "USD"),
+                        inStock: false,
+                        condition: "good",
+                        thumbnail: "e6",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "e6",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    )
+                ],
+                error: nil
+            )
+            
+        case "Coach Vintage Handbag":
+            return SerpSearchResult(
+                searchMetadata: SearchMetadata(status: "Success", createdAt: "2024-01-20T10:30:00Z"),
+                searchParameters: SearchParameters(engine: "google_shopping", query: "coach vintage handbag", condition: "used"),
+                searchInformation: SearchInformation(totalResults: "3,456", queryDisplayed: "coach vintage handbag"),
+                shoppingResults: [
+                    ShoppingResult(
+                        position: 1,
+                        title: "Coach Legacy Shoulder Brown Leather",
+                        price: "$95",
+                        extractedPrice: 95.0,
+                        link: "",
+                        source: "Fashionphile",
+                        rating: 4.9,
+                        reviews: 78,
+                        thumbnail: "https://example.com/coach-legacy.jpg",
+                        condition: "used"
+                    ),
+                    ShoppingResult(
+                        position: 2,
+                        title: "Vintage Coach Station Bag Brown",
+                        price: "$125",
+                        extractedPrice: 125.0,
+                        link: "",
+                        source: "Vestiaire Collective",
+                        rating: 4.7,
+                        reviews: 54,
+                        thumbnail: "https://example.com/coach-station.jpg",
+                        condition: "used"
+                    ),
+                    ShoppingResult(
+                        position: 3,
+                        title: "Coach Vintage Crossbody Bag",
+                        price: "$80",
+                        extractedPrice: 80.0,
+                        link: "",
+                        source: "The RealReal",
+                        rating: 4.8,
+                        reviews: 92,
+                        thumbnail: "https://example.com/coach-crossbody.jpg",
+                        condition: "used"
+                    )
+                ],
+                organicResults: nil,
+                imageResults: nil,
+                visualMatches: [
+                    // IN STOCK ITEMS
+                    VisualMatch(
+                        position: 1,
+                        title: "Coach Legacy 9966 Shoulder Bag",
+                        link: "",
+                        source: "Rebag",
+                        sourceIcon: nil,
+                        rating: 4.9,
+                        reviews: 23,
+                        price: PriceInfo(value: "$110", extractedValue: 110.0, currency: "USD"),
+                        inStock: true,
+                        condition: "excellent",
+                        thumbnail: "c1",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "c1",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    ),
+                    VisualMatch(
+                        position: 2,
+                        title: "Coach Vintage Station Bag Brown",
+                        link: "",
+                        source: "Fashionphile",
+                        sourceIcon: nil,
+                        rating: 4.7,
+                        reviews: 41,
+                        price: PriceInfo(value: "$125", extractedValue: 125.0, currency: "USD"),
+                        inStock: true,
+                        condition: "very good",
+                        thumbnail: "c2",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "c2",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    ),
+                    VisualMatch(
+                        position: 3,
+                        title: "Coach Crossbody Bag - Brown",
+                        link: "",
+                        source: "Vestiaire",
+                        sourceIcon: nil,
+                        rating: 4.8,
+                        reviews: 67,
+                        price: PriceInfo(value: "$95", extractedValue: 95.0, currency: "USD"),
+                        inStock: true,
+                        condition: "good",
+                        thumbnail: "c3",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "c3",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    ),
+                    // SOLD OUT ITEMS
+                    VisualMatch(
+                        position: 4,
+                        title: "Coach Vintage Court Bag",
+                        link: "",
+                        source: "The RealReal",
+                        sourceIcon: nil,
+                        rating: 5.0,
+                        reviews: 89,
+                        price: PriceInfo(value: "$185", extractedValue: 185.0, currency: "USD"),
+                        inStock: false,
+                        condition: "pristine",
+                        thumbnail: "c4",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "c4",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    ),
+                    VisualMatch(
+                        position: 5,
+                        title: "Coach Madison Tote",
+                        link: "",
+                        source: "Luxury Consignment",
+                        sourceIcon: nil,
+                        rating: 4.6,
+                        reviews: 34,
+                        price: PriceInfo(value: "$155", extractedValue: 155.0, currency: "USD"),
+                        inStock: false,
+                        condition: "excellent",
+                        thumbnail: "c5",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "c5",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    ),
+                    VisualMatch(
+                        position: 6,
+                        title: "Coach Signature Handbag",
+                        link: "",
+                        source: "YOOX",
+                        sourceIcon: nil,
+                        rating: 4.4,
+                        reviews: 52,
+                        price: PriceInfo(value: "$135", extractedValue: 135.0, currency: "USD"),
+                        inStock: false,
+                        condition: "good",
+                        thumbnail: "c6",
+                        thumbnailWidth: 300,
+                        thumbnailHeight: 300,
+                        image: "c6",
+                        imageWidth: 800,
+                        imageHeight: 800
+                    )
+                ],
+                error: nil
+            )
+            
+        default:
+            return nil
+        }
+    }
+
+// MARK: - Sample Clothing Details for Default Songs
+    private func createSampleClothingDetails(for songTitle: String) -> ClothingDetails? {
+        switch songTitle {
+        case "Nike Air Jordan 1's - T-Scott":
+            return ClothingDetails(
+                category: "Shoes",
+                style: "Streetwear",
+                season: "N/A",
+                gender: "Male", 
+                designerTier: "Mid-Range",
+                era: "2020s",
+                colors: ["Black", "Brown"],
+                fabricComposition: [
+                    FabricComponent(material: "Genuine Leather", percentage: 100)
+                ],
+                isAuthentic: true
+            )
+            
+        case "Vintage Ecko Navy Blue Hoodie":
+            return ClothingDetails(
+                category: "Hoodies",
+                style: "Streetwear",
+                season: "Fall/Winter",
+                gender: "Unisex",
+                designerTier: "Standard",
+                era: "Contemporary",
+                colors: ["Navy Blue", "White"],
+                fabricComposition: [
+                    FabricComponent(material: "Cotton", percentage: 70),
+                    FabricComponent(material: "Polyester", percentage: 30)
+                ],
+                isAuthentic: true
+            )
+            
+        case "Coach Vintage Handbag":
+            return ClothingDetails(
+                category: "Accessories",
+                style: "Classic",
+                season: "All Season",
+                gender: "Womens",
+                designerTier: "Luxury",
+                era: "Vintage",
+                colors: ["Black", "Brown"],
+                fabricComposition: [
+                    FabricComponent(material: "Pebbled Leather", percentage: 100)
+                ],
+                isAuthentic: true
+            )
+            
+        default:
+            return nil
         }
     }
     
     // MARK: - Market Data Loading
     private func loadMarketData() {
         guard marketData == nil && !isLoadingMarketData else { return }
+        
+        // Check if this is a default sample song - use hardcoded sample data
+        if let sampleData = createSampleMarketData(for: song.title) {
+            print("📦 Loading sample market data for default song: \(song.title)")
+            self.marketData = sampleData
+            self.updateDisplayedItems()
+            // Trigger confetti for sample data
+            self.triggerConfetti()
+            return
+        }
+        
+        // Check cache first - try song ID cache first, then fallback to search query cache
+        let hasCustomImage = song.customImage != nil
+        if let cachedData = MarketDataCache.shared.getMarketData(for: song.id.uuidString, hasCustomImage: hasCustomImage) {
+            print("📦 Loading market data from song ID cache for: \(song.title)")
+            self.marketData = cachedData
+            self.updateDisplayedItems()
+            // Trigger confetti for cached data
+            self.triggerConfetti()
+            return
+        }
+        
+        // Fallback: Check if we have cached data for the same search query
+        let searchQuery = generateSearchQuery()
+        if let cachedData = MarketDataCache.shared.getMarketDataByQuery(searchQuery: searchQuery, hasCustomImage: hasCustomImage) {
+            print("📦 Loading market data from search query cache for: \(song.title) (query: \(searchQuery))")
+            self.marketData = cachedData
+            self.updateDisplayedItems()
+            return
+        }
         
         isLoadingMarketData = true
         displayedVisualMatches = []
@@ -10402,15 +14646,37 @@ struct SongEditView: View {
                 // Check if we have an image to use for visual search
                 if let customImage = song.customImage,
                    let imageData = customImage.jpegData(compressionQuality: 0.8) {
-                    print("🔍 Using image-based search for: \(searchQuery)")
+                    print("🔍 Using pure image-based search (no text query)")
                     
-                    // Try image-based search first
-                    let results = try await serpAPIService.searchWithImage(imageData: imageData, query: searchQuery)
+                    // Try image-based search first (purely visual, no text)
+                    let results = try await serpAPIService.searchWithImage(imageData: imageData)
+                    
+                    // Cache the results
+                    MarketDataCache.shared.saveMarketData(results, for: song.id.uuidString, searchQuery: searchQuery, hasCustomImage: true)
                     
                     await MainActor.run {
+                        // Debug the results we're about to set
+                        let visualCount = results.visualMatches?.count ?? 0
+                        let shoppingCount = results.shoppingResults?.count ?? 0
+                        let organicCount = results.organicResults?.count ?? 0
+                        let imageCount = results.imageResults?.count ?? 0
+                        let totalCount = visualCount + shoppingCount + organicCount + imageCount
+                        
+                        print("🔍 Setting Market Data with:")
+                        print("   📸 Visual Matches: \(visualCount)")
+                        print("   🛒 Shopping Results: \(shoppingCount)")
+                        print("   🔗 Organic Results: \(organicCount)")
+                        print("   🖼️ Image Results: \(imageCount)")
+                        print("   📊 Total Results: \(totalCount)")
+                        
                         self.marketData = results
                         self.isLoadingMarketData = false
                         self.updateDisplayedItems()
+                        
+                        // Trigger confetti for successful data load
+                        if totalCount > 0 {
+                            self.triggerConfetti()
+                        }
                     }
                 } else {
                     print("🔍 Using text-based search for: \(searchQuery)")
@@ -10418,10 +14684,18 @@ struct SongEditView: View {
                     // Fallback to text-based search
                 let results = try await serpAPIService.searchEBayItems(query: searchQuery, condition: "used")
                 
+                // Cache the results
+                MarketDataCache.shared.saveMarketData(results, for: song.id.uuidString, searchQuery: searchQuery, hasCustomImage: false)
+                
                 await MainActor.run {
                     self.marketData = results
                     self.isLoadingMarketData = false
                         self.updateDisplayedItems()
+                        
+                        // Trigger confetti for successful fallback data load
+                        if let shoppingResults = results.shoppingResults, !shoppingResults.isEmpty {
+                            self.triggerConfetti()
+                        }
                     }
                 }
             } catch {
@@ -10439,14 +14713,14 @@ struct SongEditView: View {
         
         // If there's a custom image, enhance search for fashion/clothing items
         if song.customImage != nil {
-            if title.isEmpty || title == "untitled song" {
+            if title.isEmpty || title == "untitled song" || title == "analyzing..." {
                 return "vintage fashion clothing accessories thrift"
         } else {
                 return "\(title) vintage fashion clothing"
             }
         } else {
             // Text-only search, use title or generic term
-            if title.isEmpty || title == "untitled song" {
+            if title.isEmpty || title == "untitled song" || title == "analyzing..." {
                 return "vintage items collectibles"
             } else {
                 return title
@@ -10462,21 +14736,26 @@ struct SongEditView: View {
                 VStack(spacing: 0) {
                     // Navigation header
                     HStack {
-                        Button(action: { 
+                        // Back button
+                        Button(action: {
+                            print("🔙 Back button tapped - calling onDismiss()")
                             onDismiss()
                         }) {
-                            HStack(spacing: 8) {
-                                Image(systemName: "chevron.left")
-                                        .font(.system(size: 16, weight: .semibold))
-                                Text("back")
-                                        .font(.system(size: 16, weight: .medium))
-                            }
-                            .foregroundColor(.black)
-                            .padding(.horizontal, 16)
-                                .padding(.vertical, 10)
-                            .background(Color.gray.opacity(0.1))
-                            .cornerRadius(20)
+                            Image(systemName: "arrow.left")
+                                .font(.system(size: 20))
+                                .foregroundColor(.black)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
+                        .buttonStyle(PlainButtonStyle())
+                        
+                        Spacer()
+                        
+                        // Centered Thrifty logo
+                        Image("thrifty")
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(height: 40)
                         
                         Spacer()
                         
@@ -10494,11 +14773,15 @@ struct SongEditView: View {
                     
                     // Scan result header section
                     HStack(spacing: 16) {
-                        // Scanned item image - tappable for photo selection
-                        Button(action: { showingPhotoPicker = true }) {
+                        // Scanned item image - no longer tappable
                             Group {
                                 if let customImage = song.customImage {
                                     Image(uiImage: customImage)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                } else if !song.imageName.isEmpty {
+                                    // Show the asset image if no custom image
+                                    Image(song.imageName)
                                         .resizable()
                                         .aspectRatio(contentMode: .fill)
                                 } else {
@@ -10506,10 +14789,10 @@ struct SongEditView: View {
                                         .fill(Color.gray.opacity(0.2))
                                         .overlay(
                                             VStack(spacing: 8) {
-                                                Image(systemName: "photo")
+                                            Image(systemName: "photo")
                                                     .font(.system(size: 32))
                                                     .foregroundColor(.gray)
-                                                Text("Tap to add photo")
+                                            Text("No photo")
                                                     .font(.system(size: 12, weight: .medium))
                                                     .foregroundColor(.gray)
                                             }
@@ -10518,37 +14801,18 @@ struct SongEditView: View {
                             }
                             .frame(width: 120, height: 120)
                             .clipped()
-                            .cornerRadius(12)
+                            .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
                             .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
-                            .overlay(
-                                // Camera icon overlay when image exists
-                                Group {
-                                    if song.customImage != nil {
-                                VStack {
-                                    Spacer()
-                                    HStack {
-                                        Spacer()
-                                        Image(systemName: "camera.fill")
-                                                    .font(.system(size: 12))
-                                            .foregroundColor(.white)
-                                            .padding(6)
-                                            .background(Color.black.opacity(0.7))
-                                            .clipShape(Circle())
-                                            .padding(4)
-                                            }
-                                        }
-                                    }
-                                }
-                            )
-                        }
-                        .buttonStyle(PlainButtonStyle())
+                            .allowsHitTesting(false)
                         
                         // Item details
                         VStack(alignment: .leading, spacing: 8) {
                             if isEditingTitle {
                                 // Expandable TextEditor when editing
                                 TextEditor(text: $song.title)
-                                    .font(.system(size: 22, weight: .bold))
+                                    .font(.system(size: 18, weight: .bold))
                                     .foregroundColor(.black)
                                     .scrollContentBackground(.hidden)
                                     .frame(minHeight: 50, maxHeight: 120)
@@ -10572,7 +14836,7 @@ struct SongEditView: View {
                             } else {
                                 // Single line display when not editing
                                 Text(song.title)
-                                    .font(.system(size: 22, weight: .bold))
+                                    .font(.system(size: 18, weight: .bold))
                                     .foregroundColor(.black)
                                     .lineLimit(2)
                                     .multilineTextAlignment(.leading)
@@ -10609,57 +14873,333 @@ struct SongEditView: View {
                 .background(Color.white)
     }
     
-    private var aiAnalysisCard: some View {
+    private var contentScrollView: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                // Thrifty: AI Profit Identifier Card
+                averagePriceCard
+                
+                // In Stock Analysis Card
+                inStockAnalysisCard
+                
+                // Sold Analysis Card
+                soldAnalysisCard
+                
+                // Clothing Details Card
+                if song.customImage != nil || !song.imageName.isEmpty {
+                    clothingDetailsCard
+                        .onAppear {
+                            print("🔍 Clothing Details Card appeared - analyzing: \(isAnalyzingClothing), hasDetails: \(clothingDetails != nil)")
+                        }
+                } else {
+                    Text("DEBUG: No custom image for clothing details")
+                        .foregroundColor(.red)
+                        .padding()
+                }
+            }
+            .onAppear {
+                updateDisplayedItems()
+            }
+                                 .background(Color.gray.opacity(0.05))
+                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 20)
+                    .onChanged { value in
+                        // Only detect vertical scrolling, completely ignore horizontal swipes for swipeActions
+                        let verticalMovement = abs(value.translation.height)
+                        let horizontalMovement = abs(value.translation.width)
+                        
+                        // Only trigger scroll detection if it's primarily vertical movement with more significant distance
+                        if verticalMovement > horizontalMovement * 2 && verticalMovement > 40 && horizontalMovement < 20 {
+                            if !isScrolling {
+                                isScrolling = true
+                            }
+                        }
+                    }
+                    .onEnded { _ in
+                        // Shorter delay to prevent blocking legitimate taps
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            isScrolling = false
+                        }
+                    }
+            )
+    }
+    
+    private var averagePriceCard: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Text("Average Price")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.gray)
+                    .textCase(.uppercase)
+                    .tracking(1)
+                
+                // Animated info bubble
+                InfoBubble(showingInfo: $showingAveragePriceInfo)
+            }
+            
+            if let averagePrice = calculateOverallAveragePrice() {
+                Text("$\(String(format: "%.0f", averagePrice))")
+                    .font(.system(size: 56, weight: .bold))
+                    .foregroundColor(.black)
+            } else if isLoadingMarketData {
+                ProgressView()
+                    .scaleEffect(1.5)
+                    .frame(height: 56)
+            } else {
+                Text("N/A")
+                    .font(.system(size: 56, weight: .bold))
+                    .foregroundColor(.gray)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 20)
+        .background(Color(.systemBackground))
+        .cornerRadius(12)
+        .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 2)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
+        .preferredColorScheme(.light)
+        .confettiCannon(trigger: $trigger, num: 20, confettiSize: 6, fadesOut: true, openingAngle: Angle(degrees: 0), closingAngle: Angle(degrees: 360), radius: 80)
+        .zIndex(1000)
+    }
+    
+    private var inStockAnalysisCard: some View {
                             VStack(alignment: .leading, spacing: 12) {
                                 HStack {
-                Image(systemName: "sparkles")
+                Image(systemName: "checkmark.circle.fill")
                                         .font(.system(size: 16, weight: .medium))
-                                        .foregroundColor(.blue)
+                    .foregroundColor(.green)
                                     
-                Text("AI Style Analysis")
+                Text("In Stock")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundColor(.primary)
                                     
                                     Spacer()
+            }
                 
-                if isAnalyzing {
-                    HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 8) {
+                if isLoadingMarketData {
+                    HStack {
                         ProgressView()
                             .scaleEffect(0.8)
-                        Text("Analyzing...")
-                            .font(.system(size: 12))
-                            .foregroundColor(.gray)
-                    }
-                }
-            }
-            
-            if !displayedAnalysis.isEmpty || isAnalyzing {
-                                VStack(alignment: .leading, spacing: 8) {
-                    if !displayedAnalysis.isEmpty {
-                        Text(displayedAnalysis)
-                            .font(.system(size: 15, weight: .regular))
-                            .lineSpacing(4)
-                            .foregroundColor(.primary)
-                            .animation(.none, value: displayedAnalysis)
-                    }
-                    
-                                    if isAnalyzing && displayedAnalysis.isEmpty {
-                    HStack {
-                        Text("Analyzing your clothing piece...")
-                            .font(.system(size: 15))
-                            .foregroundColor(.gray)
-                            .italic()
-                        
+                        Text("Loading in stock items...")
+                            .font(.system(size: 14))
+                            .foregroundColor(.secondary)
                         Spacer()
                     }
-                } else if !displayedAnalysis.isEmpty && displayedAnalysis.contains("Network") {
+                } else if let marketData = marketData {
+                    // Prioritize imageResults from Google Reverse Image API, then fall back to visual matches
+                    if let imageResults = marketData.imageResults, !imageResults.isEmpty {
+                        // Convert imageResults to visual matches format for compatibility
+                        let imageBasedMatches = imageResults.compactMap { imageResult -> VisualMatch? in
+                            return VisualMatch(
+                                position: imageResult.position,
+                                title: imageResult.title,
+                                link: imageResult.redirectLink ?? imageResult.link,
+                                source: imageResult.source,
+                                sourceIcon: imageResult.favicon,
+                                rating: nil,
+                                reviews: nil,
+                                price: nil, // Image results typically don't have prices initially
+                                inStock: nil,
+                                condition: nil,
+                                thumbnail: imageResult.thumbnail,
+                                thumbnailWidth: nil,
+                                thumbnailHeight: nil,
+                                image: imageResult.thumbnail,
+                                imageWidth: nil,
+                                imageHeight: nil
+                            )
+                        }
+                        
+                        // Filter for available image results
+                        let availableMatches = filterAvailableVisualMatches(imageBasedMatches)
+                        
+                        let currentMatches = Array(availableMatches.prefix(10))
+                        
+                        if !currentMatches.isEmpty {
+                            Text("In Stock Image Results:")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(.gray)
+                                .padding(.bottom, 4)
+                            
+                            List {
+                                ForEach(Array(currentMatches.enumerated()), id: \.offset) { index, result in
+                                    visualMatchRowWithDelete(result: result, index: index)
+                                        .listRowSeparator(.hidden)
+                                        .listRowBackground(Color.clear)
+                                        .listRowInsets(EdgeInsets())
+                                }
+                            }
+                            .listStyle(PlainListStyle())
+                            .frame(height: CGFloat(currentMatches.count * 95)) // Approximate height per row
+                            .scrollDisabled(true)
+                            .onAppear {
+                                showSwipeHintAnimation()
+                            }
+                            
+                            Divider()
+                                .padding(.vertical, 4)
+                        }
+                    }
+                    // Fall back to visual matches if no image results
+                    else if let visualMatches = marketData.visualMatches, !visualMatches.isEmpty {
+                        // Filter for available visual matches
+                        let availableMatches = filterAvailableVisualMatches(visualMatches)
+                        
+                        let currentMatches = Array(availableMatches.prefix(10))
+                        
+                        if !currentMatches.isEmpty {
+                            Text("In Stock Visual Matches:")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(.gray)
+                                .padding(.bottom, 4)
+                            
+                            List {
+                                ForEach(Array(currentMatches.enumerated()), id: \.offset) { index, result in
+                                    visualMatchRowWithDelete(result: result, index: index)
+                                        .listRowSeparator(.hidden)
+                                        .listRowBackground(Color.clear)
+                                        .listRowInsets(EdgeInsets())
+                                }
+                            }
+                            .listStyle(PlainListStyle())
+                            .frame(height: CGFloat(currentMatches.count * 95)) // Approximate height per row
+                            .scrollDisabled(true)
+                            .onAppear {
+                                showSwipeHintAnimation()
+                            }
+                            
+                            Divider()
+                                .padding(.vertical, 4)
+                            
+                            // Calculate average price from in-stock items
+                            let prices = currentMatches.compactMap { result -> Double? in
+                                if let extractedValue = result.price?.extractedValue, extractedValue > 0 {
+                                    return extractedValue
+                                } else if let priceString = result.price?.value {
+                                    return extractNumericPrice(priceString)
+                                }
+                                return nil
+                            }
+                            
+                            let averagePrice = prices.isEmpty ? 0 : prices.reduce(0, +) / Double(prices.count)
+                            
+                            HStack {
+                                Text("In-Stock Average (\(currentMatches.count) items):")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(.gray)
+                                
+                                Spacer()
+                                
+                                Text(averagePrice > 0 ? "$\(String(format: "%.2f", averagePrice))" : "N/A")
+                                    .font(.system(size: 16, weight: .bold))
+                                    .foregroundColor(.green)
+                            }
+                        } else {
+                            Text("No in stock items found")
+                                .font(.system(size: 14))
+                                .foregroundColor(.gray)
+                                .padding(.vertical, 8)
+                        }
+                    }
+                    // Show available shopping results
+                    else if let shoppingResults = marketData.shoppingResults, !shoppingResults.isEmpty {
+                        // Filter for available shopping results
+                        let availableResults = filterAvailableShoppingResults(shoppingResults)
+                        
+                        let currentResults = Array(availableResults.prefix(10))
+                        
+                        if !currentResults.isEmpty {
+                            Text("In Stock Shopping Results:")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(.gray)
+                                .padding(.bottom, 4)
+                            
+                            List {
+                                ForEach(Array(currentResults.enumerated()), id: \.offset) { index, result in
+                                    shoppingResultRowWithDelete(result: result, index: index)
+                                        .listRowSeparator(.hidden)
+                                        .listRowBackground(Color.clear)
+                                        .listRowInsets(EdgeInsets())
+                                }
+                            }
+                            .listStyle(PlainListStyle())
+                            .frame(height: CGFloat(currentResults.count * 95)) // Approximate height per row
+                            .scrollDisabled(true)
+                            .onAppear {
+                                showSwipeHintAnimation()
+                            }
+                            
+                            Divider()
+                                .padding(.vertical, 4)
+                            
+                            // Calculate average price from in-stock results
+                            let prices = currentResults.compactMap { result -> Double? in
+                                if let extractedPrice = result.extractedPrice, extractedPrice > 0 {
+                                    return extractedPrice
+                                } else if let priceString = result.price {
+                                    return extractNumericPrice(priceString)
+                                }
+                                return nil
+                            }
+                            
+                            let averagePrice = prices.isEmpty ? 0 : prices.reduce(0, +) / Double(prices.count)
+                            
+                    HStack {
+                                Text("In-Stock Average (\(currentResults.count) items):")
+                                    .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.gray)
+                        
+                        Spacer()
+                                
+                                Text(averagePrice > 0 ? "$\(String(format: "%.2f", averagePrice))" : "N/A")
+                                    .font(.system(size: 16, weight: .bold))
+                                    .foregroundColor(.green)
+                            }
+                        } else {
+                            Text("No in stock items found")
+                                .font(.system(size: 14))
+                                        .foregroundColor(.gray)
+                                .padding(.vertical, 8)
+                        }
+                    }
+                    // Show image results if available
+                    else if let imageResults = marketData.imageResults, !imageResults.isEmpty {
+                        Text("Similar Items Found:")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.gray)
+                            .padding(.bottom, 4)
+                        
+                        ForEach(Array(imageResults.prefix(3).enumerated()), id: \.offset) { index, result in
+                            imageResultRow(result: result)
+                        }
+                    } else {
+                        Text("No in-stock data available")
+                            .font(.system(size: 14))
+                            .foregroundColor(.gray)
+                            .padding(.vertical, 8)
+                    }
+                } else if let error = marketAnalysisError {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundColor(.orange)
+                        Text(error)
+                            .font(.system(size: 14))
+                            .foregroundColor(.orange)
+                        Spacer()
+                    }
+                    .padding(.vertical, 4)
+                    
                     Button(action: {
-                        startAIAnalysis()
+                        loadMarketData()
                     }) {
                         HStack {
                             Image(systemName: "arrow.clockwise")
                                 .font(.system(size: 12))
-                            Text("Retry Analysis")
+                            Text("Retry")
                                 .font(.system(size: 13, weight: .medium))
                         }
                         .foregroundColor(.blue)
@@ -10669,36 +15209,32 @@ struct SongEditView: View {
                         .cornerRadius(15)
                     }
                     .buttonStyle(PlainButtonStyle())
-                                }
-                            }
+                } else {
+                    Text("No in-stock data available")
+                        .font(.system(size: 14))
+                        .foregroundColor(.gray)
                 .padding(.vertical, 8)
-                .padding(.horizontal, 12)
-                .background(Color(.systemGray6))
-                            .cornerRadius(12)
             }
-            
-
-            
-            
+            }
         }
         .padding(16)
         .background(Color(.systemBackground))
         .cornerRadius(16)
         .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 2)
         .padding(.horizontal, 16)
-        .padding(.bottom, 16)
+        .preferredColorScheme(.light)
     }
     
-    private var marketAnalysisCard: some View {
+    private var soldAnalysisCard: some View {
                             VStack(alignment: .leading, spacing: 12) {
                                 HStack {
-                                    Image(systemName: "chart.line.uptrend.xyaxis")
+                Image(systemName: "checkmark.seal.fill")
                                         .font(.system(size: 16, weight: .medium))
-                                        .foregroundColor(.green)
-                                    
-                                    Text("Market Price Analysis")
-                                        .font(.system(size: 16, weight: .semibold))
-                                        .foregroundColor(.black)
+                    .foregroundColor(.red)
+                
+                Text("Sold")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.primary)
                                     
                                     Spacer()
                                 }
@@ -10708,35 +15244,41 @@ struct SongEditView: View {
                                         HStack {
                                             ProgressView()
                                                 .scaleEffect(0.8)
-                                            Text("Loading market data...")
+                        Text("Loading sold data...")
                                                 .font(.system(size: 14))
-                                                .foregroundColor(.gray)
+                            .foregroundColor(.secondary)
                                             Spacer()
                                         }
                             } else if let marketData = marketData {
-                                // Show visual matches first (from Google Lens) - most relevant for images
+                    // Show sold visual matches
                                 if let visualMatches = marketData.visualMatches, !visualMatches.isEmpty {
-                                    // Filter to only show items with prices
-                                    let visualMatchesWithPrices = visualMatches.filter { result in
-                                        result.price?.extractedValue != nil && (result.price?.extractedValue ?? 0) > 0
-                                    }
-                                    
-                                    let currentMatches = displayedVisualMatches.isEmpty ? Array(visualMatchesWithPrices.prefix(5)) : displayedVisualMatches
+                        // Filter for sold visual matches using smart inference
+                        let soldMatches = filterSoldVisualMatches(visualMatches)
+                        
+                        let currentMatches = Array(soldMatches.prefix(10))
                                     
                                     if !currentMatches.isEmpty {
-                                        Text("Visual Product Matches:")
+                            Text("Sold Visual Matches:")
                                             .font(.system(size: 14, weight: .medium))
                                             .foregroundColor(.gray)
                                             .padding(.bottom, 4)
                                         
-                                        ForEach(Array(currentMatches.enumerated()), id: \.offset) { index, result in
-                                            visualMatchRowWithDelete(result: result, index: index)
-                                        }
+                            List {
+                                ForEach(Array(currentMatches.enumerated()), id: \.offset) { index, result in
+                                                visualMatchRowWithDelete(result: result, index: index)
+                                                    .listRowSeparator(.hidden)
+                                                    .listRowBackground(Color.clear)
+                                                    .listRowInsets(EdgeInsets())
+                                            }
+                            }
+                            .listStyle(PlainListStyle())
+                            .frame(height: CGFloat(currentMatches.count * 95)) // Approximate height per row
+                            .scrollDisabled(true)
                                         
                                         Divider()
                                             .padding(.vertical, 4)
                                         
-                                        // Calculate average price from displayed visual matches
+                            // Calculate average price from sold items
                                         let prices = currentMatches.compactMap { result -> Double? in
                                             if let extractedValue = result.price?.extractedValue, extractedValue > 0 {
                                                 return extractedValue
@@ -10746,11 +15288,10 @@ struct SongEditView: View {
                                             return nil
                                         }
                                         
-                                        // Calculate average of displayed prices (sum ÷ count)
                                         let averagePrice = prices.isEmpty ? 0 : prices.reduce(0, +) / Double(prices.count)
                                         
                                         HStack {
-                                            Text("Visual Match Average (\(currentMatches.count) items):")
+                                Text("Sold Average (\(currentMatches.count) items):")
                                                 .font(.system(size: 14, weight: .medium))
                                                 .foregroundColor(.gray)
                                             
@@ -10758,35 +15299,45 @@ struct SongEditView: View {
                                             
                                             Text(averagePrice > 0 ? "$\(String(format: "%.2f", averagePrice))" : "N/A")
                                                 .font(.system(size: 16, weight: .bold))
-                                                .foregroundColor(.black)
+                                    .foregroundColor(.red)
                                         }
+                        } else {
+                            Text("No sold items found")
+                                .font(.system(size: 14))
+                                .foregroundColor(.gray)
+                                .padding(.vertical, 8)
                                     }
                                 }
-                                // Show shopping results if available
+                    // Show sold shopping results
                                 else if let shoppingResults = marketData.shoppingResults, !shoppingResults.isEmpty {
-                                    // Filter to only show items with prices
-                                    let shoppingResultsWithPrices = shoppingResults.filter { result in
-                                        (result.extractedPrice != nil && (result.extractedPrice ?? 0) > 0) || 
-                                        (result.price != nil && result.price != "N/A" && !result.price!.isEmpty)
-                                    }
+                        // Filter for sold shopping results using smart inference
+                        let soldResults = filterSoldShoppingResults(shoppingResults)
                                     
-                                    let currentShoppingResults = displayedShoppingResults.isEmpty ? Array(shoppingResultsWithPrices.prefix(5)) : displayedShoppingResults
+                        let currentResults = Array(soldResults.prefix(10))
                                     
-                                    if !currentShoppingResults.isEmpty {
-                                        Text("Shopping Results:")
+                        if !currentResults.isEmpty {
+                            Text("Sold Shopping Results:")
                                             .font(.system(size: 14, weight: .medium))
                                                 .foregroundColor(.gray)
                                             .padding(.bottom, 4)
                                         
-                                        ForEach(Array(currentShoppingResults.enumerated()), id: \.offset) { index, result in
-                                            shoppingResultRowWithDelete(result: result, index: index)
-                                        }
+                            List {
+                                ForEach(Array(currentResults.enumerated()), id: \.offset) { index, result in
+                                                shoppingResultRowWithDelete(result: result, index: index)
+                                                    .listRowSeparator(.hidden)
+                                                    .listRowBackground(Color.clear)
+                                                    .listRowInsets(EdgeInsets())
+                                            }
+                            }
+                            .listStyle(PlainListStyle())
+                            .frame(height: CGFloat(currentResults.count * 95)) // Approximate height per row
+                            .scrollDisabled(true)
                                         
                                         Divider()
                                             .padding(.vertical, 4)
                                     
-                                        // Calculate average price from displayed shopping results
-                                        let prices = currentShoppingResults.compactMap { result -> Double? in
+                            // Calculate average price from sold results
+                            let prices = currentResults.compactMap { result -> Double? in
                                             if let extractedPrice = result.extractedPrice, extractedPrice > 0 {
                                                 return extractedPrice
                                             } else if let priceString = result.price {
@@ -10795,11 +15346,10 @@ struct SongEditView: View {
                                             return nil
                                         }
                                         
-                                        // Calculate average of displayed prices (sum ÷ count)
                                         let averagePrice = prices.isEmpty ? 0 : prices.reduce(0, +) / Double(prices.count)
                                         
                                         HStack {
-                                            Text("Shopping Average (\(currentShoppingResults.count) items):")
+                                Text("Sold Average (\(currentResults.count) items):")
                                                 .font(.system(size: 14, weight: .medium))
                                                 .foregroundColor(.gray)
                                             
@@ -10807,96 +15357,45 @@ struct SongEditView: View {
                                             
                                             Text(averagePrice > 0 ? "$\(String(format: "%.2f", averagePrice))" : "N/A")
                                                 .font(.system(size: 16, weight: .bold))
-                                                .foregroundColor(.black)
-                                        }
-                                    }
-                                }
-                                // Show image results if available (from reverse image search)
-                                else if let imageResults = marketData.imageResults, !imageResults.isEmpty {
-                                    Text("Similar Items Found:")
-                                        .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(.red)
+                            }
+                        } else {
+                            Text("No sold items found")
+                                .font(.system(size: 14))
                                         .foregroundColor(.gray)
-                                        .padding(.bottom, 4)
-                                    
-                                    ForEach(Array(imageResults.prefix(3).enumerated()), id: \.offset) { index, result in
-                                        imageResultRow(result: result)
-                                    }
-                                    
-                                    Divider()
-                                        .padding(.vertical, 4)
-                                    
-                                    HStack {
-                                        Text("Use these results to search for prices")
-                                            .font(.system(size: 12))
+                                .padding(.vertical, 8)
+                        }
+                    } else {
+                        Text("No sold data available")
+                            .font(.system(size: 14))
                                             .foregroundColor(.gray)
-                                        Spacer()
-                                    }
-                                }
-                                // Show organic results as fallback
-                                else if let organicResults = marketData.organicResults, !organicResults.isEmpty {
-                                    Text("Related Items Found:")
-                                        .font(.system(size: 14, weight: .medium))
-                                        .foregroundColor(.gray)
-                                        .padding(.bottom, 4)
-                                    
-                                    ForEach(Array(organicResults.prefix(3).enumerated()), id: \.offset) { index, result in
-                                        organicResultRow(result: result)
-                                    }
+                            .padding(.vertical, 8)
                                 }
                         } else if let error = marketAnalysisError {
-                            VStack(spacing: 8) {
                                 HStack {
                                     Image(systemName: "exclamationmark.triangle")
                                         .foregroundColor(.orange)
-                                    Text("Market data unavailable")
+                        Text(error)
                                         .font(.system(size: 14))
-                                        .foregroundColor(.gray)
+                            .foregroundColor(.orange)
                                     Spacer()
                                 }
-                                
-                                Text(error)
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.gray)
-                                    .multilineTextAlignment(.leading)
-                                
-                                Button(action: {
-                                    marketData = nil
-                                    marketAnalysisError = nil
-                                    loadMarketData()
-                                }) {
-                                    HStack {
-                                        Image(systemName: "arrow.clockwise")
-                                            .font(.system(size: 12))
-                                        Text("Retry Search")
-                                            .font(.system(size: 12, weight: .medium))
-                                    }
-                                    .foregroundColor(.blue)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 6)
-                                    .background(Color.blue.opacity(0.1))
-                                    .cornerRadius(8)
-                                }
-                            }
+                    .padding(.vertical, 4)
                         } else {
-                            // No data available
-                            HStack {
-                                Image(systemName: "info.circle")
-                                    .foregroundColor(.blue)
-                                Text("No market data available")
+                    Text("No sold data available")
                                     .font(.system(size: 14))
                                     .foregroundColor(.gray)
-                                Spacer()
-                                        }
+                        .padding(.vertical, 8)
                                     }
                                 }
                             }
                             .padding(16)
-                            .background(Color.white)
-                            .cornerRadius(12)
-                            .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 2)
-                .padding(.horizontal, 20)
-                .padding(.top, 16)
-                .padding(.bottom, 20)
+        .background(Color(.systemBackground))
+        .cornerRadius(12)
+        .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 2)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 16)
+        .preferredColorScheme(.light)
     }
                             
     private var clothingDetailsCard: some View {
@@ -10904,13 +15403,24 @@ struct SongEditView: View {
                         HStack {
                 Image(systemName: "tshirt.fill")
                                 .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(.green)
+                    .foregroundColor(.blue)
                                     
-                Text("Clothing Details")
+                Text("Details")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundColor(.primary)
                                     
                                     Spacer()
+                
+                // Authenticity indicator on the right
+                if let details = clothingDetails, let isAuthentic = details.isAuthentic {
+                    Text(isAuthentic ? "Authentic" : "Counterfeit")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(isAuthentic ? .green : .red)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background((isAuthentic ? Color.green : Color.red).opacity(0.1))
+                        .cornerRadius(8)
+                }
                 
                 if isAnalyzingClothing {
                     ProgressView()
@@ -10992,7 +15502,9 @@ struct SongEditView: View {
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 6)
                                     .background(Color.green.opacity(0.1))
-                                    .cornerRadius(12)
+                                    .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
                             }
                                         Spacer()
                                     }
@@ -11006,7 +15518,7 @@ struct SongEditView: View {
                                 HStack {
                             Image(systemName: "fiberchannel")
                                 .font(.system(size: 14))
-                                .foregroundColor(.green)
+                                .foregroundColor(.blue)
                             Text("FABRIC COMPOSITION")
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundColor(.gray)
@@ -11026,7 +15538,7 @@ struct SongEditView: View {
                                         .foregroundColor(.white)
                                         .padding(.horizontal, 8)
                                         .padding(.vertical, 4)
-                                        .background(Color.green)
+                                        .background(Color.blue)
                                         .cornerRadius(8)
                                 }
                                 .padding(.vertical, 4)
@@ -11039,7 +15551,7 @@ struct SongEditView: View {
                 HStack {
                     Text("Analyzing clothing details...")
                         .font(.system(size: 15))
-                        .foregroundColor(.gray)
+                        .foregroundColor(.secondary)
                         .italic()
                     Spacer()
                 }
@@ -11068,52 +15580,27 @@ struct SongEditView: View {
                     .buttonStyle(PlainButtonStyle())
                 }
                 .padding(.vertical, 20)
+            } else {
+                // Analysis should be running automatically
+                VStack(spacing: 12) {
+                    Text("Analyzing clothing details...")
+                        .font(.system(size: 15))
+                        .foregroundColor(.secondary)
+                        .italic()
+                    
+                    ProgressView()
+                        .scaleEffect(0.8)
+                }
+                .padding(.vertical, 20)
                                 }
                             }
                             .padding(16)
         .background(Color(.systemBackground))
-        .cornerRadius(16)
+        .cornerRadius(12)
         .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 2)
         .padding(.horizontal, 16)
         .padding(.bottom, 16)
-                }
-    
-    private var contentScrollView: some View {
-        ScrollView {
-            VStack(spacing: 8) {
-                // AI Style Analysis Card
-                if song.customImage != nil {
-                    aiAnalysisCard
-                        .onAppear {
-                            print("🔍 AI Analysis Card appeared - analyzing: \(isAnalyzing), hasAnalysis: \(!displayedAnalysis.isEmpty)")
-                        }
-                } else {
-                    Text("DEBUG: No custom image for AI analysis")
-                        .foregroundColor(.red)
-                        .padding()
-                }
-                
-                // Market Analysis Card
-                marketAnalysisCard
-                
-                // Clothing Details Card
-                if song.customImage != nil {
-                    clothingDetailsCard
-                        .onAppear {
-                            print("🔍 Clothing Details Card appeared - analyzing: \(isAnalyzingClothing), hasDetails: \(clothingDetails != nil)")
-                        }
-                } else {
-                    Text("DEBUG: No custom image for clothing details")
-                        .foregroundColor(.red)
-                        .padding()
-                }
-            }
-            .onAppear {
-                updateDisplayedItems()
-            }
-                                 .background(Color.gray.opacity(0.05))
-                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+        .preferredColorScheme(.light)
     }
     
     // MARK: - Main Body
@@ -11122,48 +15609,203 @@ struct SongEditView: View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
                 headerView
+                    .zIndex(1)
                 contentScrollView
             }
             }
             .background(Color.white)
             .navigationBarHidden(true)
-            .onAppear {
-                loadMarketData()
-            
-            // Start analysis if image already exists
-            if song.customImage != nil {
-                let imageCount = song.allImages.count
-                print("🔍 Image exists on appear (\(imageCount) total images), starting analysis...")
-                if aiAnalysis.isEmpty && !isAnalyzing {
-                    startAIAnalysis()
+            .overlay(
+                // Average Price Info Popup
+                Group {
+                    if showingAveragePriceInfo {
+                        ZStack {
+                            Color.black.opacity(0.4)
+                                .ignoresSafeArea()
+                                .onTapGesture {
+                                    showingAveragePriceInfo = false
+                                }
+                            
+                            VStack(spacing: 20) {
+                                VStack(alignment: .leading, spacing: 16) {
+                                    HStack {
+                                        Text("How Average Price is Calculated")
+                                            .font(.system(size: 18, weight: .bold))
+                                            .foregroundColor(.black)
+                                        
+                                        Spacer()
+                                        
+                                        Button(action: {
+                                            showingAveragePriceInfo = false
+                                        }) {
+                                            Image(systemName: "xmark.circle.fill")
+                                                .font(.system(size: 20))
+                                                .foregroundColor(.gray)
+                                        }
+                                    }
+                                    
+                                    VStack(alignment: .leading, spacing: 12) {
+                                        Text("We calculate the average price by:")
+                                            .font(.system(size: 14))
+                                            .foregroundColor(.black)
+                                        
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            HStack(alignment: .top, spacing: 8) {
+                                                Text("•")
+                                                    .font(.system(size: 14))
+                                                    .foregroundColor(.blue)
+                                                Text("Adding up all listing prices from current resale platforms")
+                                                    .font(.system(size: 14))
+                                                    .foregroundColor(.black)
+                                            }
+                                            
+                                            HStack(alignment: .top, spacing: 8) {
+                                                Text("•")
+                                                    .font(.system(size: 14))
+                                                    .foregroundColor(.blue)
+                                                Text("Adding up all sold prices from recently completed sales")
+                                                    .font(.system(size: 14))
+                                                    .foregroundColor(.black)
+                                            }
+                                            
+                                            HStack(alignment: .top, spacing: 8) {
+                                                Text("•")
+                                                    .font(.system(size: 14))
+                                                    .foregroundColor(.blue)
+                                                Text("Dividing the total sum by the number of data points")
+                                                    .font(.system(size: 14))
+                                                    .foregroundColor(.black)
+                                            }
+                                        }
+                                        
+                                        Divider()
+                                            .padding(.vertical, 4)
+                                        
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            Text("💡 Pro Tip:")
+                                                .font(.system(size: 14, weight: .semibold))
+                                                .foregroundColor(.orange)
+                                            
+                                            Text("Sometimes we pick up bad data points. You can swipe left on any result to delete it, and the average price will update automatically!")
+                                                .font(.system(size: 14))
+                                                .foregroundColor(.black)
+                                        }
+                                    }
+                                }
+                                .padding(20)
+                                .background(Color.white)
+                                .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
+                                .shadow(color: Color.black.opacity(0.1), radius: 10, x: 0, y: 5)
+                            }
+                            .padding(.horizontal, 24)
+                        }
+                    }
                 }
-                if clothingDetails == nil && !isAnalyzingClothing {
-                    analyzeClothingDetails()
+            )
+            .onAppear {
+                // Debug cache contents on app startup
+                print("📱 SongEditView appeared for song: '\(song.title)' (ID: \(song.id.uuidString))")
+                MarketDataCache.shared.debugCacheContents()
+                
+                // Load persistent deletions for this song
+                loadDeletions()
+                
+                // Only auto-load market data if user hasn't deleted items
+                if !hasDeletedItems {
+                    loadMarketData()
+                }
+            
+            // Check if this is a default sample song - use hardcoded sample clothing details
+            if let sampleClothingDetails = createSampleClothingDetails(for: song.title) {
+                print("📦 Loading sample clothing details for default song: \(song.title)")
+                self.clothingDetails = sampleClothingDetails
+            } else {
+                // Start analysis if image already exists
+                if song.customImage != nil {
+                    let imageCount = song.allImages.count
+                    print("🔍 Image exists on appear (\(imageCount) total images), starting clothing analysis...")
+                    
+                    // Check for pre-analyzed results from parallel analysis first
+                    if let firstImage = song.allImages.first,
+                       let cachedDetails = AnalysisResultsCache.shared.getClothingDetails(for: firstImage) {
+                        print("📦 Loading Clothing Details from parallel analysis cache")
+                        self.clothingDetails = cachedDetails
+                    } else {
+                        // Fallback to old cache mechanism
+                    let clothingCacheKey = "clothing_details_\(song.id.uuidString)_\(song.allImages.count)"
+                    if let cachedClothingResponse = MarketDataCache.shared.getOpenAIResponse(for: "clothing_details", input: clothingCacheKey) {
+                            print("📦 Loading Clothing Details from traditional cache on appear")
+                        let details = parseClothingDetailsResponse(cachedClothingResponse)
+                        self.clothingDetails = details
+                    } else if clothingDetails == nil && !isAnalyzingClothing {
+                        // Check if analysis is already in progress from camera/upload flow
+                        // If not found in any cache, then start analysis
+                        print("🔍 No cached clothing details found, starting automatic analysis...")
+                        analyzeClothingDetails()
+                        }
+                    }
+                    
+                    // Check for pre-generated title from parallel analysis
+                    if song.title == "Analyzing...",
+                       let firstImage = song.allImages.first,
+                       let cachedTitle = AnalysisResultsCache.shared.getGeneratedTitle(for: firstImage) {
+                        print("📦 Loading title from parallel analysis cache")
+                        // Update the song title in the song manager
+                        if let songIndex = songManager.songs.firstIndex(where: { $0.id == song.id }) {
+                            songManager.songs[songIndex].title = cachedTitle
+                            self.song.title = cachedTitle
+                            // Also update the corresponding recent find
+                            if let recentFindsManager = recentFindsManager {
+                                updateRecentFindFromAnalysis(recentFindsManager: recentFindsManager, songId: song.id, newTitle: cachedTitle)
+                            }
+                        }
+                    } else if song.title == "Analyzing..." {
+                        generateItemTitle()
+                    }
+                }
+            }
+            
+            // Mark view as fully loaded and trigger confetti if needed
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                isViewFullyLoaded = true
+                if shouldTriggerConfettiWhenLoaded {
+                    shouldTriggerConfettiWhenLoaded = false
+                    trigger += 1
                 }
             }
         }
         .onDisappear {
-            stopTypingAnimation()
             }
-            .photosPicker(isPresented: $showingPhotoPicker, selection: $selectedPhoto, matching: .images)
+            .photosPicker(isPresented: $showingPhotoPicker, selection: $selectedPhoto, matching: .any(of: [.images]))
             .onChange(of: selectedPhoto) { newValue in
                 Task {
-                    if let data = try? await newValue?.loadTransferable(type: Data.self),
+                    if let newValue = newValue,
+                       let data = try? await newValue.loadTransferable(type: Data.self),
                        let uiImage = UIImage(data: data) {
                         song.customImage = uiImage
                         song.lastEdited = Date()
-                        songManager.updateSong(song)
+                        songManager.updateSongInPlace(song)
                         
                     // Reload market data with the new image
                     await MainActor.run {
+                        // Clear cache for this specific song/card
+                        MarketDataCache.shared.removeMarketData(for: song.id.uuidString, hasCustomImage: true)
+                        MarketDataCache.shared.removeMarketData(for: song.id.uuidString, hasCustomImage: false)
+                        
+                        // Also clear search query cache to ensure fresh data with new image
+                        let searchQuery = generateSearchQuery()
+                        MarketDataCache.shared.removeMarketDataByQuery(searchQuery: searchQuery, hasCustomImage: true)
+                        MarketDataCache.shared.removeMarketDataByQuery(searchQuery: searchQuery, hasCustomImage: false)
+                        
+                        let clothingCacheKey = "clothing_details_\(song.id.uuidString)_\(song.allImages.count)"
+                        MarketDataCache.shared.removeOpenAIResponse(for: "clothing_details", input: clothingCacheKey)
+                        
                         marketData = nil // Clear existing data
                         marketAnalysisError = nil // Clear any previous errors
                         
-                        // Reset AI analysis when new photo is selected
-                        stopTypingAnimation()
-                        aiAnalysis = ""
-                        displayedAnalysis = ""
-                        isAnalyzing = false
+                        // Reset analysis when new photo is selected
                         
                         // Clear displayed items
                         displayedVisualMatches = []
@@ -11173,10 +15815,7 @@ struct SongEditView: View {
                         clothingDetails = nil
                         isAnalyzingClothing = false
                         
-                        // Auto-start AI analysis
-                        startAIAnalysis()
-                        
-                        // Auto-start clothing details analysis
+                        // Auto-start clothing details analysis for uploaded image
                         analyzeClothingDetails()
                     }
                     loadMarketData()
@@ -11190,17 +15829,39 @@ struct SongEditView: View {
                     isTitleFocused = false
             }
             }
-        .alert("Delete Song", isPresented: $showingDeleteAlert) {
+        .alert("Delete Item", isPresented: $showingDeleteAlert) {
                 Button("Delete", role: .destructive) {
-                    deleteSong()
+                    deleteSongWithCacheCleanup()
                 }
                 Button("Cancel", role: .cancel) { }
             } message: {
-            Text("Are you sure you want to delete this song? This action cannot be undone.")
+            Text("Are you sure you want to delete this item? This action cannot be undone.")
             }
         .sheet(isPresented: $showingExpandedImage) {
             ImageExpansionView(imageURL: expandedImageURL ?? "")
         }
+    }
+    
+    // MARK: - Delete Item Function
+    private func deleteSongWithCacheCleanup() {
+        print("🗑️ Deleting song: '\(song.title)' (ID: \(song.id))")
+        
+        // Clear all cached data for this song
+        MarketDataCache.shared.removeMarketData(for: song.id.uuidString, hasCustomImage: true)
+        MarketDataCache.shared.removeMarketData(for: song.id.uuidString, hasCustomImage: false)
+        
+        // Clear OpenAI cached responses for this song
+        let songIdString = song.id.uuidString
+        MarketDataCache.shared.removeOpenAIResponse(for: "clothing_details", input: "clothing_details_\(songIdString)_\(song.allImages.count)")
+        MarketDataCache.shared.removeOpenAIResponse(for: "title_generation", input: "title_generation_\(songIdString)_\(song.allImages.count)")
+        
+        print("✅ Cleared all cached data for song: \(song.id)")
+        
+        // Remove the song from the song manager
+        songManager.deleteSong(song)
+        
+        // Close the edit view
+        onDismiss()
     }
     
     // MARK: - Helper Views for Market Data
@@ -11227,38 +15888,44 @@ struct SongEditView: View {
     
     @ViewBuilder
     private func imageResultRow(result: ImageResult) -> some View {
-        Button(action: {
-            if let urlString = result.link, let url = URL(string: urlString) {
-                UIApplication.shared.open(url)
-            }
-        }) {
-            HStack(spacing: 8) {
-            // Thumbnail if available
+        HStack(spacing: 12) {
+            // Thumbnail if available (non-clickable, bigger)
             if let thumbnail = result.thumbnail {
-                AsyncImage(url: URL(string: thumbnail)) { image in
-                    image
+                // Check if it's a local asset or remote URL
+                if thumbnail.hasPrefix("http") {
+                    // Remote URL - use AsyncImage
+                    AsyncImage(url: URL(string: thumbnail)) { image in
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } placeholder: {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.gray.opacity(0.3))
+                            .overlay(
+                                Image(systemName: "photo")
+                                    .foregroundColor(.gray)
+                                    .font(.system(size: 20))
+                            )
+                    }
+                    .frame(width: 80, height: 80)
+                    .cornerRadius(8)
+                } else {
+                    // Local asset - use Image
+                    Image(thumbnail)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
-                } placeholder: {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.gray.opacity(0.3))
-                        .overlay(
-                            Image(systemName: "photo")
-                                .foregroundColor(.gray)
-                                .font(.system(size: 12))
-                        )
+                        .frame(width: 80, height: 80)
+                        .cornerRadius(8)
                 }
-                .frame(width: 45, height: 45)
-                .cornerRadius(6)
             } else {
                 // Placeholder when no image available
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: 8)
                     .fill(Color.gray.opacity(0.2))
-                    .frame(width: 45, height: 45)
+                    .frame(width: 80, height: 80)
                     .overlay(
                         Image(systemName: "photo")
                             .foregroundColor(.gray)
-                            .font(.system(size: 14))
+                            .font(.system(size: 24))
                     )
             }
             
@@ -11277,11 +15944,7 @@ struct SongEditView: View {
             
             Spacer()
             }
-        }
-        .buttonStyle(PlainButtonStyle()) // Prevent default button styling
-        .background(Color.clear)
-        .contentShape(Rectangle()) // Make entire row tappable
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
     }
     
     @ViewBuilder
@@ -11308,60 +15971,40 @@ struct SongEditView: View {
     
     @ViewBuilder
     private func shoppingResultRowWithDelete(result: ShoppingResult, index: Int) -> some View {
-        HStack(spacing: 8) {
-            // Delete button (X)
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    let _ = displayedShoppingResults.remove(at: index)
-                }
-            }) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 18))
-                    .foregroundColor(.red)
-                    .background(Color.white)
-                    .clipShape(Circle())
-            }
-            .buttonStyle(PlainButtonStyle())
-            
             // Product content
             Button(action: {
+                guard !isScrolling else { return }
                 if let urlString = result.link, let url = URL(string: urlString) {
                     UIApplication.shared.open(url)
                 }
             }) {
                 HStack(spacing: 8) {
-                    // Product thumbnail
+                    // Product thumbnail (non-clickable, bigger)
                     if let thumbnail = result.thumbnail {
-                        Button(action: {
-                            expandedImageURL = thumbnail
-                            showingExpandedImage = true
-                        }) {
                             AsyncImage(url: URL(string: thumbnail)) { image in
                                 image
                                     .resizable()
                                     .aspectRatio(contentMode: .fill)
                             } placeholder: {
-                                RoundedRectangle(cornerRadius: 4)
+                            RoundedRectangle(cornerRadius: 8)
                                     .fill(Color.gray.opacity(0.3))
                                     .overlay(
                                         Image(systemName: "photo")
                                             .foregroundColor(.gray)
-                                            .font(.system(size: 12))
-                                    )
-                            }
-                            .frame(width: 50, height: 50)
-                            .cornerRadius(6)
+                                        .font(.system(size: 20))
+                                )
                         }
-                        .buttonStyle(PlainButtonStyle())
+                        .frame(width: 80, height: 80)
+                        .cornerRadius(8)
                     } else {
                         // Placeholder when no image
-                        RoundedRectangle(cornerRadius: 6)
+                        RoundedRectangle(cornerRadius: 8)
                             .fill(Color.gray.opacity(0.2))
-                            .frame(width: 50, height: 50)
+                            .frame(width: 80, height: 80)
                             .overlay(
                                 Image(systemName: "photo")
                                     .foregroundColor(.gray)
-                                    .font(.system(size: 16))
+                                    .font(.system(size: 24))
                             )
                     }
                     
@@ -11378,24 +16021,14 @@ struct SongEditView: View {
                 .foregroundColor(.blue)
                             }
                             
-                            if let condition = result.condition {
-                                Text("• \(condition)")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.gray)
-                            }
+                            // Display smart availability status instead of raw condition
+                            let availabilityStatus = inferShoppingAvailabilityStatus(title: result.title, condition: result.condition, source: result.source)
+                            Text(availabilityStatus == "available" ? "• In Stock" : "• Sold")
+                                .font(.system(size: 12))
+                                .foregroundColor(availabilityStatus == "available" ? .green : .red)
                         }
                         
-                        // Show rating and reviews if available
-                        if let rating = result.rating, let reviews = result.reviews {
-                            HStack(spacing: 2) {
-                                Image(systemName: "star.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.yellow)
-                                Text("\(String(format: "%.1f", rating)) (\(reviews))")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.gray)
-                            }
-                        }
+
                     }
             
             Spacer()
@@ -11416,49 +16049,58 @@ struct SongEditView: View {
                 .foregroundColor(.gray)
                         }
                     }
+                    .padding(.trailing, 16) // Add space for delete button
                 }
             }
             .buttonStyle(PlainButtonStyle())
             .background(Color.clear)
             .contentShape(Rectangle())
-        }
         .padding(.vertical, 6)
+        .offset(x: index == 0 && showSwipeHint ? swipeHintOffset : 0)
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button(role: .destructive) {
+                deleteShoppingResult(result, at: index)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
     }
     
     @ViewBuilder 
     private func shoppingResultRow(result: ShoppingResult) -> some View {
         Button(action: {
+            guard !isScrolling else { return }
             if let urlString = result.link, let url = URL(string: urlString) {
                 UIApplication.shared.open(url)
             }
         }) {
             HStack(spacing: 8) {
-            // Product thumbnail
+            // Product thumbnail (non-clickable, bigger)
             if let thumbnail = result.thumbnail {
                 AsyncImage(url: URL(string: thumbnail)) { image in
                     image
                         .resizable()
                         .aspectRatio(contentMode: .fill)
                 } placeholder: {
-                    RoundedRectangle(cornerRadius: 4)
+                    RoundedRectangle(cornerRadius: 8)
                         .fill(Color.gray.opacity(0.3))
                         .overlay(
                             Image(systemName: "photo")
                                 .foregroundColor(.gray)
-                                .font(.system(size: 12))
+                                .font(.system(size: 20))
                         )
                 }
-                .frame(width: 50, height: 50)
-                .cornerRadius(6)
+                .frame(width: 80, height: 80)
+                .cornerRadius(8)
             } else {
                 // Placeholder when no image
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: 8)
                     .fill(Color.gray.opacity(0.2))
-                    .frame(width: 50, height: 50)
+                    .frame(width: 80, height: 80)
                     .overlay(
                         Image(systemName: "photo")
                             .foregroundColor(.gray)
-                            .font(.system(size: 16))
+                            .font(.system(size: 24))
                     )
             }
             
@@ -11482,34 +16124,25 @@ struct SongEditView: View {
                     }
                 }
                 
-                // Show rating and reviews if available
-                if let rating = result.rating, let reviews = result.reviews {
-                    HStack(spacing: 2) {
-                        Image(systemName: "star.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.yellow)
-                        Text("\(String(format: "%.1f", rating)) (\(reviews))")
-                            .font(.system(size: 11))
-                            .foregroundColor(.gray)
-                    }
-                }
+
             }
             
             Spacer()
             
-            VStack(alignment: .trailing, spacing: 2) {
-                if let price = result.price {
-                    Text(price)
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundColor(.black)
-                }
-                
-                if let extractedPrice = result.extractedPrice, extractedPrice > 0 {
-                    Text("$\(String(format: "%.2f", extractedPrice))")
-                        .font(.system(size: 12))
-                        .foregroundColor(.gray)
-        }
-            }
+                                VStack(alignment: .trailing, spacing: 2) {
+                        if let price = result.price {
+                            Text(price)
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundColor(.black)
+                        }
+                        
+                        if let extractedPrice = result.extractedPrice, extractedPrice > 0 {
+                            Text("$\(String(format: "%.2f", extractedPrice))")
+                .font(.system(size: 12))
+                .foregroundColor(.gray)
+                        }
+                    }
+                    .padding(.trailing, 16) // Add space for delete button
             }
         }
         .buttonStyle(PlainButtonStyle()) // Prevent default button styling
@@ -11520,60 +16153,51 @@ struct SongEditView: View {
     
     @ViewBuilder
     private func visualMatchRowWithDelete(result: VisualMatch, index: Int) -> some View {
-        HStack(spacing: 8) {
-            // Delete button (X)
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    let _ = displayedVisualMatches.remove(at: index)
-                }
-            }) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 18))
-                    .foregroundColor(.red)
-                    .background(Color.white)
-                    .clipShape(Circle())
-            }
-            .buttonStyle(PlainButtonStyle())
-            
             // Product content
             Button(action: {
+                guard !isScrolling else { return }
                 if let urlString = result.link, let url = URL(string: urlString) {
                     UIApplication.shared.open(url)
                 }
             }) {
                 HStack(spacing: 8) {
-                    // Thumbnail if available
+                    // Thumbnail if available (non-clickable, bigger)
                     if let thumbnail = result.thumbnail {
-                        Button(action: {
-                            expandedImageURL = thumbnail
-                            showingExpandedImage = true
-                        }) {
-                            AsyncImage(url: URL(string: thumbnail)) { image in
-                                image
+                            // Check if it's a local asset or remote URL
+                            if thumbnail.hasPrefix("http") {
+                                // Remote URL - use AsyncImage
+                                AsyncImage(url: URL(string: thumbnail)) { image in
+                                    image
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                } placeholder: {
+                                RoundedRectangle(cornerRadius: 8)
+                                        .fill(Color.gray.opacity(0.3))
+                                        .overlay(
+                                            Image(systemName: "photo")
+                                                .foregroundColor(.gray)
+                                                .font(.system(size: 20))
+                                        )
+                                }
+                                .frame(width: 80, height: 80)
+                                .cornerRadius(8)
+                            } else {
+                                // Local asset - use Image
+                                Image(thumbnail)
                                     .resizable()
                                     .aspectRatio(contentMode: .fill)
-                            } placeholder: {
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color.gray.opacity(0.3))
-                                    .overlay(
-                                        Image(systemName: "photo")
-                                            .foregroundColor(.gray)
-                .font(.system(size: 14))
-                                    )
+                                    .frame(width: 80, height: 80)
+                                    .cornerRadius(8)
                             }
-                            .frame(width: 55, height: 55)
-                            .cornerRadius(6)
-                        }
-                        .buttonStyle(PlainButtonStyle())
                     } else {
                         // Placeholder when no image available
-                        RoundedRectangle(cornerRadius: 6)
+                        RoundedRectangle(cornerRadius: 8)
                             .fill(Color.gray.opacity(0.2))
-                            .frame(width: 55, height: 55)
+                            .frame(width: 80, height: 80)
                             .overlay(
                                 Image(systemName: "photo")
                                     .foregroundColor(.gray)
-                                    .font(.system(size: 18))
+                                    .font(.system(size: 24))
                             )
                     }
                     
@@ -11590,17 +16214,11 @@ struct SongEditView: View {
                                     .foregroundColor(.gray)
                             }
                             
-                            if let condition = result.condition {
-                                Text("• \(condition)")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.gray)
-                            }
-                            
-                            if let inStock = result.inStock {
-                                Text(inStock ? "• In Stock" : "• Out of Stock")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(inStock ? .green : .red)
-                            }
+                            // Display smart availability status instead of raw condition
+                            let availabilityStatus = inferAvailabilityStatus(title: result.title, condition: result.condition, source: result.source, inStock: result.inStock)
+                            Text(availabilityStatus == "available" ? "• In Stock" : "• Sold")
+                                .font(.system(size: 12))
+                                .foregroundColor(availabilityStatus == "available" ? .green : .red)
                         }
                     }
                     
@@ -11616,29 +16234,29 @@ struct SongEditView: View {
                             }
                         }
                         
-                        if let rating = result.rating, let reviews = result.reviews {
-                            HStack(spacing: 2) {
-                                Image(systemName: "star.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.yellow)
-                                Text("\(String(format: "%.1f", rating)) (\(reviews))")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.gray)
-                            }
-                        }
+
                     }
+                    .padding(.trailing, 16) // Add space for delete button
                 }
             }
             .buttonStyle(PlainButtonStyle())
             .background(Color.clear)
             .contentShape(Rectangle())
-        }
         .padding(.vertical, 6)
+        .offset(x: index == 0 && showSwipeHint ? swipeHintOffset : 0)
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button(role: .destructive) {
+                deleteVisualMatch(result, at: index)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
     }
     
     @ViewBuilder
     private func visualMatchRow(result: VisualMatch) -> some View {
         Button(action: {
+            guard !isScrolling else { return }
             if let urlString = result.link, let url = URL(string: urlString) {
                 UIApplication.shared.open(url)
             }
@@ -11646,21 +16264,32 @@ struct SongEditView: View {
             HStack(spacing: 8) {
             // Thumbnail if available
             if let thumbnail = result.thumbnail {
-                AsyncImage(url: URL(string: thumbnail)) { image in
-                    image
+                // Check if it's a local asset or remote URL
+                if thumbnail.hasPrefix("http") {
+                    // Remote URL - use AsyncImage
+                    AsyncImage(url: URL(string: thumbnail)) { image in
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } placeholder: {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.gray.opacity(0.3))
+                            .overlay(
+                                Image(systemName: "photo")
+                                    .foregroundColor(.gray)
+                    .font(.system(size: 14))
+                            )
+                    }
+                    .frame(width: 55, height: 55)
+                    .cornerRadius(6)
+                } else {
+                    // Local asset - use Image
+                    Image(thumbnail)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
-                } placeholder: {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.gray.opacity(0.3))
-                        .overlay(
-                            Image(systemName: "photo")
-                                .foregroundColor(.gray)
-                .font(.system(size: 14))
-                        )
+                        .frame(width: 55, height: 55)
+                        .cornerRadius(6)
                 }
-                .frame(width: 55, height: 55)
-                .cornerRadius(6)
             } else {
                 // Placeholder when no image available
                 RoundedRectangle(cornerRadius: 6)
@@ -11693,7 +16322,7 @@ struct SongEditView: View {
                     }
                     
                     if let inStock = result.inStock {
-                        Text(inStock ? "• In Stock" : "• Out of Stock")
+                        Text(inStock ? "• In Stock" : "• Sold")
                             .font(.system(size: 12))
                             .foregroundColor(inStock ? .green : .red)
                     }
@@ -11709,16 +16338,7 @@ struct SongEditView: View {
                         .foregroundColor(.black)
                 }
                 
-                if let rating = result.rating, let reviews = result.reviews {
-                    HStack(spacing: 2) {
-                        Image(systemName: "star.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.yellow)
-                        Text("\(String(format: "%.1f", rating)) (\(reviews))")
-                            .font(.system(size: 10))
-                            .foregroundColor(.gray)
-                    }
-                }
+
             }
             }
         }
@@ -12130,1808 +16750,198 @@ struct SongEditView: View {
         let seconds = Int(time) % 60
         return String(format: "%d:%02d", minutes, seconds)
     }
-}
-
-
-
-// Datamuse API Rhyme Engine - Professional rhyming service with massive vocabulary
-class DatamuseRhymeEngine: ObservableObject {
-    private let baseURL = "https://api.datamuse.com/words"
     
-    // Find rhymes using professional Datamuse API (perfect + slant rhymes)
-    func findRhymes(for word: String) async -> [String] {
-        var separatorSet = CharacterSet.whitespacesAndNewlines
-        separatorSet.formUnion(.punctuationCharacters)
-        let cleanWord = word.lowercased().trimmingCharacters(in: separatorSet)
+    // MARK: - Debug Helper Functions
+    
+    private func debugAndFilterVisualMatches(_ visualMatches: [VisualMatch]) -> [VisualMatch] {
+        print("🔍 Visual Filter Debug: Starting with \(visualMatches.count) visual matches")
         
-        guard !cleanWord.isEmpty, cleanWord.count >= 2 else {
-            print("⚠️ Word too short or empty: '\(cleanWord)'")
-            return []
+        // Debug each item before filtering
+        for (index, match) in visualMatches.enumerated() {
+            let hasPrice = match.price?.extractedValue != nil && (match.price?.extractedValue ?? 0) > 0
+            let inferredStatus = inferAvailabilityStatus(title: match.title, condition: match.condition, source: match.source, inStock: match.inStock)
+            print("   Item \(index + 1): Price=\(match.price?.extractedValue ?? -1) HasPrice=\(hasPrice) Status=\(inferredStatus) Title=\(match.title ?? "N/A")")
         }
         
-        print("🌐 Datamuse API request for: '\(cleanWord)'")
+        // First try filtering for items with prices (removed inStock requirement)
+        let pricedMatches = visualMatches.filter { result in
+            let hasPrice = result.price?.extractedValue != nil && (result.price?.extractedValue ?? 0) > 0
+            return hasPrice
+        }
         
-        // Get both perfect rhymes and near rhymes (slant rhymes)
-        async let perfectRhymes = fetchRhymes(for: cleanWord, type: "rel_rhy")  // Perfect rhymes
-        async let slantRhymes = fetchRhymes(for: cleanWord, type: "rel_nry")    // Near/slant rhymes
+        if !pricedMatches.isEmpty {
+            print("🔍 Visual Filter Result: \(pricedMatches.count) items with prices found")
+            return pricedMatches
+        }
         
-        do {
-            let (perfect, slant) = await (try perfectRhymes, try slantRhymes)
+        // If no items with prices, show relevant content that appears to be product-related
+        let relevantMatches = visualMatches.filter { result in
+            guard let title = result.title?.lowercased() else { return false }
             
-            // Combine and deduplicate, prioritizing perfect rhymes
-            var allRhymes = perfect
-            for rhyme in slant {
-                if !allRhymes.contains(rhyme) {
-                    allRhymes.append(rhyme)
-                }
-            }
+            // Exclude obvious non-product content
+            let isRelevant = !title.contains("youtube") && 
+                           !title.contains("tiktok") && 
+                           !title.contains("instagram") && 
+                           !title.contains("new york times") && 
+                           !title.contains("vogue") && 
+                           !title.contains("best 10") &&
+                           !title.contains("top 10") &&
+                           !title.contains("guide to") &&
+                           !title.contains("how to") &&
+                           title.count < 150 // Exclude very long titles (likely articles)
             
-            let finalRhymes = Array(allRhymes.prefix(50))
-            print("✅ Datamuse found \(perfect.count) perfect + \(slant.count) slant rhymes = \(finalRhymes.count) total")
+            // Prefer content that mentions actual products or stores
+            let hasProductKeywords = title.contains("bag") || 
+                                   title.contains("handbag") || 
+                                   title.contains("purse") || 
+                                   title.contains("louis vuitton") || 
+                                   title.contains("vintage") ||
+                                   title.contains("speedy") ||
+                                   title.contains("monogram")
             
-            return finalRhymes
-            
-        } catch {
-            print("❌ Datamuse API error: \(error)")
-            return getFallbackRhymes(for: cleanWord)
+            return isRelevant && hasProductKeywords
+        }
+        
+        print("🔍 Visual Filter Result: \(relevantMatches.count) relevant items found (no prices available)")
+        return relevantMatches
+    }
+    
+    // Smart availability inference based on text patterns and inStock boolean
+    private func inferAvailabilityStatus(title: String?, condition: String?, source: String?, inStock: Bool? = nil) -> String {
+        // First check if we have explicit inStock data (for hardcoded items)
+        if let inStock = inStock {
+            return inStock ? "available" : "sold"
+        }
+        
+        let allText = "\(title ?? "") \(condition ?? "") \(source ?? "")".lowercased()
+        
+        // Strong indicators of SOLD status
+        if allText.contains("sold") ||
+           allText.contains("no longer available") ||
+           allText.contains("out of stock") ||
+           allText.contains("discontinued") ||
+           allText.contains("auction ended") ||
+           allText.contains("listing ended") ||
+           allText.contains("item removed") {
+            return "sold"
+        }
+        
+        // Strong indicators of AVAILABLE status
+        if allText.contains("buy now") ||
+           allText.contains("add to cart") ||
+           allText.contains("in stock") ||
+           allText.contains("available") ||
+           allText.contains("ships") ||
+           allText.contains("delivery") ||
+           allText.contains("free shipping") ||
+           allText.contains("buy it now") ||
+           allText.contains("purchase") {
+            return "available"
+        }
+        
+        // If no clear indicators, assume available (better to show too many than too few)
+        return "available"
+    }
+    
+    // Filter specifically for available items
+    private func filterAvailableVisualMatches(_ visualMatches: [VisualMatch]) -> [VisualMatch] {
+        // First apply deletion filtering, then availability filtering
+        let notDeletedMatches = getFilteredVisualMatches(visualMatches)
+        return notDeletedMatches.filter { match in
+            let hasPrice = match.price?.extractedValue != nil && (match.price?.extractedValue ?? 0) > 0
+            let status = inferAvailabilityStatus(title: match.title, condition: match.condition, source: match.source, inStock: match.inStock)
+            return hasPrice && status == "available"
         }
     }
     
-    // Helper function to fetch specific type of rhymes
-    private func fetchRhymes(for word: String, type: String) async throws -> [String] {
-        var components = URLComponents(string: baseURL)!
-        components.queryItems = [
-            URLQueryItem(name: type, value: word),            // rel_rhy or rel_nry
-            URLQueryItem(name: "md", value: "d,p,r"),         // Include definitions, pronunciations, rhyme info
-            URLQueryItem(name: "max", value: "30")            // Limit results per type
-        ]
-        
-        guard let url = components.url else {
-            throw URLError(.badURL)
-        }
-        
-        let (data, _) = try await URLSession.shared.data(from: url)
-        let rhymes = try JSONDecoder().decode([DatamuseWord].self, from: data)
-        
-        // Extract and filter word strings
-        return rhymes.compactMap { rhyme in
-            let rhymeWord = rhyme.word.lowercased()
-            // Filter out the original word and very short words
-            return (rhymeWord != word && rhymeWord.count >= 2) ? rhymeWord : nil
+    // Filter specifically for sold items
+    private func filterSoldVisualMatches(_ visualMatches: [VisualMatch]) -> [VisualMatch] {
+        // First apply deletion filtering, then availability filtering
+        let notDeletedMatches = getFilteredVisualMatches(visualMatches)
+        return notDeletedMatches.filter { match in
+            let hasPrice = match.price?.extractedValue != nil && (match.price?.extractedValue ?? 0) > 0
+            let status = inferAvailabilityStatus(title: match.title, condition: match.condition, source: match.source, inStock: match.inStock)
+            return hasPrice && status == "sold"
         }
     }
     
-    // Synchronous wrapper for compatibility with existing UI
-    func findRhymes(for word: String) -> [String] {
-        // Return fallback immediately for sync calls
-        return getFallbackRhymes(for: word)
-    }
-    
-    // Improved async version for real-time updates
-    @MainActor
-    func findRhymesAsync(for word: String) async -> [String] {
-        return await findRhymes(for: word)
-    }
-    
-    // Get only perfect rhymes
-    func findPerfectRhymes(for word: String) async -> [String] {
-        var separatorSet = CharacterSet.whitespacesAndNewlines
-        separatorSet.formUnion(.punctuationCharacters)
-        let cleanWord = word.lowercased().trimmingCharacters(in: separatorSet)
+    private func debugAndFilterShoppingResults(_ shoppingResults: [ShoppingResult]) -> [ShoppingResult] {
+        print("🔍 Shopping Filter Debug: Starting with \(shoppingResults.count) shopping results")
         
-        guard !cleanWord.isEmpty, cleanWord.count >= 2 else { return [] }
-        
-        do {
-            return try await fetchRhymes(for: cleanWord, type: "rel_rhy")
-        } catch {
-            return []
-        }
-    }
-    
-    // Get only slant/near rhymes
-    func findSlantRhymes(for word: String) async -> [String] {
-        var separatorSet = CharacterSet.whitespacesAndNewlines
-        separatorSet.formUnion(.punctuationCharacters)
-        let cleanWord = word.lowercased().trimmingCharacters(in: separatorSet)
-        
-        guard !cleanWord.isEmpty, cleanWord.count >= 2 else { return [] }
-        
-        do {
-            return try await fetchRhymes(for: cleanWord, type: "rel_nry")
-        } catch {
-            return []
-        }
-    }
-    
-    // Basic fallback for offline or API failures
-    func getFallbackRhymes(for word: String) -> [String] {
-        // Simple fallback patterns for common endings
-        let commonRhymes: [String: [String]] = [
-            "ay": ["day", "way", "say", "play", "stay"],
-            "ight": ["night", "light", "fight", "right", "sight"],
-            "eart": ["heart", "start", "part", "art", "smart"],
-            "ime": ["time", "rhyme", "crime", "climb", "prime"],
-            "ove": ["love", "above", "shove", "dove"],
-            "ain": ["pain", "rain", "chain", "brain", "main"]
-        ]
-        
-        for (ending, rhymes) in commonRhymes {
-            if word.hasSuffix(ending) {
-                return rhymes.filter { $0 != word }
-            }
+        // Debug each item before filtering
+        for (index, result) in shoppingResults.enumerated() {
+            let hasPrice = (result.extractedPrice != nil && result.extractedPrice ?? 0 > 0) || 
+                         (result.price != nil && result.price != "N/A" && !result.price!.isEmpty)
+            let inferredStatus = inferShoppingAvailabilityStatus(title: result.title, condition: result.condition, source: result.source)
+            print("   Item \(index + 1): ExtractedPrice=\(result.extractedPrice ?? -1) Price=\(result.price ?? "N/A") HasPrice=\(hasPrice) Status=\(inferredStatus) Title=\(result.title ?? "N/A")")
         }
         
-        return []
+        // Filter for items with prices (removed sold/instock filtering)
+        let pricedResults = shoppingResults.filter { result in
+            let hasPrice = (result.extractedPrice != nil && result.extractedPrice ?? 0 > 0) || 
+                         (result.price != nil && result.price != "N/A" && !result.price!.isEmpty)
+            return hasPrice
+        }
+        
+        print("🔍 Shopping Filter Result: \(pricedResults.count) items with prices found")
+        return pricedResults
     }
-}
-
-// Datamuse API Response Model
-struct DatamuseWord: Codable {
-    let word: String
-    let score: Int?
-    let tags: [String]?
     
-    // Optional fields from API
-    let defs: [String]?  // Definitions
-}
-
-// Rhyme Highlighting System - Visual rhyme pattern analysis
-class RhymeHighlighter: ObservableObject {
-    @Published var highlightedText: AttributedString = AttributedString("")
-    private let rhymeEngine = DatamuseRhymeEngine()
-    
-    // Color palette for rhyme groups
-    private let rhymeColors: [Color] = [
-        .blue, .green, .purple, .orange, .red, .cyan, 
-        .pink, .yellow, .indigo, .mint, .brown, .teal
-    ]
-    
-    // Analyze lyrics and create color-coded highlighting
-    func analyzeAndHighlight(_ lyrics: String) async {
-        print("🎨 Starting rhyme analysis for highlighting...")
+    // Smart availability inference for shopping results
+    private func inferShoppingAvailabilityStatus(title: String?, condition: String?, source: String?) -> String {
+        let allText = "\(title ?? "") \(condition ?? "") \(source ?? "")".lowercased()
         
-        let words = extractWords(from: lyrics)
-        let rhymeGroups = await findRhymeGroups(words: words)
-        let highlighted = createHighlightedText(lyrics: lyrics, rhymeGroups: rhymeGroups)
+        // Strong indicators of SOLD status
+        if allText.contains("sold") ||
+           allText.contains("out of stock") ||
+           allText.contains("unavailable") ||
+           allText.contains("no longer available") ||
+           allText.contains("discontinued") ||
+           allText.contains("sold out") ||
+           allText.contains("temporarily out of stock") {
+            return "sold"
+        }
         
-        await MainActor.run {
-            self.highlightedText = highlighted
+        // Strong indicators of AVAILABLE status
+        if allText.contains("in stock") ||
+           allText.contains("available") ||
+           allText.contains("buy now") ||
+           allText.contains("add to cart") ||
+           allText.contains("ships") ||
+           allText.contains("delivery") ||
+           allText.contains("free shipping") ||
+           allText.contains("quick delivery") ||
+           allText.contains("express shipping") ||
+           allText.contains("same day") ||
+           allText.contains("next day") {
+            return "available"
+        }
+        
+        // If no clear indicators, assume available
+        return "available"
+    }
+    
+    // Filter specifically for available shopping results
+    private func filterAvailableShoppingResults(_ shoppingResults: [ShoppingResult]) -> [ShoppingResult] {
+        // First apply deletion filtering, then availability filtering
+        let notDeletedResults = getFilteredShoppingResults(shoppingResults)
+        return notDeletedResults.filter { result in
+            let hasPrice = (result.extractedPrice != nil && result.extractedPrice ?? 0 > 0) || 
+                         (result.price != nil && result.price != "N/A" && !result.price!.isEmpty)
+            let status = inferShoppingAvailabilityStatus(title: result.title, condition: result.condition, source: result.source)
+            return hasPrice && status == "available"
         }
     }
     
-    // Extract words while preserving positions for highlighting
-    private func extractWords(from text: String) -> [(word: String, range: Range<String.Index>)] {
-        var words: [(String, Range<String.Index>)] = []
-        
-        text.enumerateSubstrings(in: text.startIndex..<text.endIndex, options: [.byWords, .localized]) { substring, range, _, _ in
-            if let word = substring {
-                let cleanWord = word.lowercased().trimmingCharacters(in: .punctuationCharacters)
-                if cleanWord.count >= 2 {
-                    words.append((cleanWord, range))
-                }
-            }
-        }
-        
-        return words
-    }
-    
-    // Group words by rhymes using Datamuse API (perfect + slant rhymes)
-    private func findRhymeGroups(words: [(String, Range<String.Index>)]) async -> [String: (groupIndex: Int, isSlant: Bool)] {
-        var rhymeGroups: [String: (Int, Bool)] = [:]
-        var groupIndex = 0
-        
-        for (word, _) in words {
-            if rhymeGroups[word] != nil { continue } // Already processed
-            
-            // Find perfect and slant rhymes separately
-            let perfectRhymes = await rhymeEngine.findPerfectRhymes(for: word)
-            let slantRhymes = await rhymeEngine.findSlantRhymes(for: word)
-            
-            // Find which perfect rhymes exist in the lyrics
-            var matchingPerfectRhymes: [String] = []
-            for rhyme in perfectRhymes {
-                if words.contains(where: { $0.0 == rhyme }) {
-                    matchingPerfectRhymes.append(rhyme)
-                }
-            }
-            
-            // Find which slant rhymes exist in the lyrics (excluding perfect rhymes)
-            var matchingSlantRhymes: [String] = []
-            for rhyme in slantRhymes {
-                if words.contains(where: { $0.0 == rhyme }) && !perfectRhymes.contains(rhyme) {
-                    matchingSlantRhymes.append(rhyme)
-                }
-            }
-            
-            // Only assign group if this word has rhyming partners in the lyrics
-            if !matchingPerfectRhymes.isEmpty || !matchingSlantRhymes.isEmpty {
-                // Assign this word and its perfect rhymes to the same group
-                rhymeGroups[word] = (groupIndex, false) // false = perfect rhyme
-                
-                for rhyme in matchingPerfectRhymes {
-                    rhymeGroups[rhyme] = (groupIndex, false)
-                }
-                
-                for rhyme in matchingSlantRhymes {
-                    rhymeGroups[rhyme] = (groupIndex, true) // true = slant rhyme
-                }
-                
-                groupIndex += 1
-            }
-        }
-        
-        print("🎯 Found \(groupIndex) rhyme groups with perfect and slant rhymes")
-        return rhymeGroups
-    }
-    
-    // Create AttributedString with color highlighting (perfect + slant rhymes)
-    private func createHighlightedText(lyrics: String, rhymeGroups: [String: (groupIndex: Int, isSlant: Bool)]) -> AttributedString {
-        var attributed = AttributedString(lyrics)
-        
-        // Apply styling to all words
-        lyrics.enumerateSubstrings(in: lyrics.startIndex..<lyrics.endIndex, options: [.byWords, .localized]) { substring, range, _, _ in
-            if let word = substring {
-                let cleanWord = word.lowercased().trimmingCharacters(in: .punctuationCharacters)
-                let attributedRange = Range(range, in: attributed)!
-                
-                if let rhymeInfo = rhymeGroups[cleanWord] {
-                    // Apply highlighting to rhyming words
-                    let color = self.rhymeColors[rhymeInfo.groupIndex % self.rhymeColors.count]
-                    
-                    if rhymeInfo.isSlant {
-                        // Slant rhymes: lighter background with border effect
-                        attributed[attributedRange].backgroundColor = color.opacity(0.15)
-                        attributed[attributedRange].foregroundColor = .white
-                        attributed[attributedRange].underlineStyle = .single
-                    } else {
-                        // Perfect rhymes: solid background (original styling)
-                        attributed[attributedRange].backgroundColor = color.opacity(0.3)
-                        attributed[attributedRange].foregroundColor = .white
-                    }
-                } else {
-                    // Ensure non-rhyming words remain visible with default styling
-                    attributed[attributedRange].foregroundColor = .white
-                    attributed[attributedRange].backgroundColor = .clear
-                }
-            }
-        }
-        
-        return attributed
-    }
-}
-
-// Old PhoneticRhymeEngine completely removed - now using Datamuse API for professional rhyming
-
-// ... existing code ...
-
-// Add ImagePicker struct before ProfileView
-struct ImagePicker: UIViewControllerRepresentable {
-    @Environment(\.presentationMode) var presentationMode
-    @Binding var image: UIImage?
-
-    func makeUIViewController(context: UIViewControllerRepresentableContext<ImagePicker>) -> UIImagePickerController {
-        let picker = UIImagePickerController()
-        picker.delegate = context.coordinator
-        picker.sourceType = .photoLibrary
-        return picker
-    }
-
-    func updateUIViewController(_ uiViewController: UIImagePickerController, context: UIViewControllerRepresentableContext<ImagePicker>) {
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-
-    class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
-        let parent: ImagePicker
-
-        init(_ parent: ImagePicker) {
-            self.parent = parent
-        }
-
-        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
-            if let uiImage = info[.originalImage] as? UIImage {
-                parent.image = uiImage
-            }
-            parent.presentationMode.wrappedValue.dismiss()
-        }
-
-        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            parent.presentationMode.wrappedValue.dismiss()
-        }
-    }
-}
-
-struct ToolDetailView: View {
-    @Environment(\.dismiss) var dismiss
-    let title: String
-    let description: String
-    let backgroundImage: String
-    @StateObject private var responseManager = ToolResponseManager.shared
-    @State private var userInput = ""
-    @State private var generatedText = ""
-    @State private var isGenerating = false
-    @State private var error: Error?
-    @State private var showError = false
-    @State private var showFullScreenText = false
-    
-    // Function to get placeholder text based on tool
-    private func getPlaceholderText() -> String {
-        switch title {
-        case "AI Bar Generator":
-            return "Type your lyrics here..."
-        case "Alliterate It":
-            return "Type a phrase to alliterate..."
-        case "Chorus Creator":
-            return "Insert what your song is about here..."
-        case "Creative One-Liner":
-            return "Write me a creative one-liner about..."
-        case "Diss Track Generator":
-            return "Insert 3 of your opponents weaknesses..."
-        case "Double Entendre":
-            return "Enter a topic for your double meaning..."
-        case "Finisher":
-            return "Paste your unfinished lyrics here..."
-        case "Flex-on-'em":
-            return "What accomplishment are you flexing?"
-        case "Imperfect Rhyme":
-            return "Enter words to create near rhymes..."
-        case "Industry Analyzer":
-            return "Paste your lyrics for analysis..."
-        case "Quadruple Entendre":
-            return "Enter a topic for four meanings..."
-        case "Rap Instagram Captions":
-            return "Enter lyrics or theme for captions..."
-        case "Rap Name Generator":
-            return "Enter your name or characteristics..."
-        case "Shapeshift":
-            return "Enter a word to transform..."
-        case "Triple Entendre":
-            return "Enter a topic for three meanings..."
-        case "Ultimate Come Up Song":
-            return "Tell us your story or goals..."
-        default:
-            return "Type your input here..."
-        }
-    }
-    
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                Color.black.ignoresSafeArea()
-                
-                VStack(spacing: 0) {
-                    // Header with gradient background
-                    VStack(spacing: 0) {
-                        // Header with close button
-                        HStack {
-                            Text(title)
-                                .font(.system(size: 28, weight: .bold))
-                                .foregroundColor(.white)
-                            Spacer()
-                            Button(action: { dismiss() }) {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 16))
-                                    .foregroundColor(.white.opacity(0.7))
-                                    .padding(8)
-                                    .background(Color.white.opacity(0.1))
-                                    .clipShape(Circle())
-                            }
-                        }
-                        .padding(.horizontal, 24)
-                        .padding(.top, geometry.safeAreaInsets.top + 1)
-                        
-                        Text(description)
-                            .font(.system(size: 16))
-                            .foregroundColor(.white.opacity(0.7))
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 24)
-                            .padding(.top, 16)
-                            .padding(.bottom, 24)
-                    }
-                    .background(
-                        ZStack {
-                            // Background image
-                            Image(backgroundImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(maxWidth: .infinity)
-                            
-                            // Gradient overlay
-                            LinearGradient(
-                                gradient: Gradient(stops: [
-                                    .init(color: Color.clear, location: 0.0),
-                                    .init(color: Color.black.opacity(0.4), location: 0.5),
-                                    .init(color: Color.black.opacity(0.95), location: 1.0)
-                                ]),
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        }
-                        .ignoresSafeArea(.all, edges: .top)
-                    )
-                    
-                    // Input area
-                    VStack(spacing: 24) {
-                        // Text editor with custom styling - fixed touch handling
-                        VStack(spacing: 0) {
-                        ZStack(alignment: .topLeading) {
-                                // Background container
-                                Rectangle()
-                                    .fill(Color.white.opacity(0.1))
-                                    .cornerRadius(16)
-                                    .frame(height: 200)
-                                
-                                // TextEditor with full touch area
-                            TextEditor(text: $userInput)
-                                .font(.system(size: 16))
-                                .foregroundColor(.white)
-                                .scrollContentBackground(.hidden)
-                                .background(Color.clear)
-                                .frame(height: 200)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 12)
-                                .tint(.white) // White cursor
-                                    .onChange(of: userInput) { newValue in
-                                        responseManager.updateUserInput(for: title, userInput: newValue)
-                                    }
-                            
-                                // Placeholder text overlay
-                            if userInput.isEmpty {
-                                    VStack {
-                                        HStack {
-                                Text(getPlaceholderText())
-                                    .foregroundColor(.white.opacity(0.3))
-                                    .font(.system(size: 16))
-                                    .padding(.horizontal, 20)
-                                    .padding(.top, 20)
-                                    .allowsHitTesting(false)
-                                            Spacer()
-                            }
-                                        Spacer()
-                        }
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 24)
-                        
-                        // Rainbow loading bar - same container as other elements
-                        if isGenerating {
-                            RainbowLoadingBar()
-                                .padding(.horizontal, 24) // Match textbox horizontal padding
-                                .padding(.top, -12) // Bring closer to textbox
-                        }
-                        
-                        // Generated text (if any) - IMPROVED SCROLLABLE VERSION
-                        if !generatedText.isEmpty {
-                            VStack(alignment: .leading, spacing: 12) {
-                                // Header with copy button
-                                HStack {
-                                    Text("Generated Result")
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundColor(.white.opacity(0.7))
-                                    
-                                    // Show restored indicator if content was loaded from previous session
-                                    if let savedResponse = responseManager.toolResponses[title],
-                                       !savedResponse.generatedText.isEmpty,
-                                       Calendar.current.isDate(savedResponse.timestamp, inSameDayAs: Date()) == false {
-                                        Text("Restored")
-                                            .font(.system(size: 10, weight: .medium))
-                                            .foregroundColor(.blue)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(Color.blue.opacity(0.2))
-                                            .cornerRadius(4)
-                                    }
-                                    
-                                    Spacer()
-                                    
-                                    HStack(spacing: 6) {
-                                        // Full screen view button - icon only
-                                        Button(action: {
-                                            showFullScreenText = true
-                                        }) {
-                                            Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                                .font(.system(size: 14))
-                                                .foregroundColor(.white.opacity(0.8))
-                                                .frame(width: 28, height: 28)
-                                                .background(Color.white.opacity(0.1))
-                                                .cornerRadius(6)
-                                        }
-                                        
-                                        // Copy button - icon only
-                                        Button(action: {
-                                            UIPasteboard.general.string = generatedText
-                                        }) {
-                                            Image(systemName: "doc.on.doc")
-                                                .font(.system(size: 14))
-                                                .foregroundColor(.white.opacity(0.8))
-                                                .frame(width: 28, height: 28)
-                                                .background(Color.white.opacity(0.1))
-                                                .cornerRadius(6)
-                                        }
-                                        
-                                        // Clear button - icon only
-                                        Button(action: {
-                                            userInput = ""
-                                            generatedText = ""
-                                            responseManager.clearResponse(for: title)
-                                        }) {
-                                            Image(systemName: "trash")
-                                                .font(.system(size: 14))
-                                                .foregroundColor(.white.opacity(0.8))
-                                                .frame(width: 28, height: 28)
-                                                .background(Color.white.opacity(0.1))
-                                                .cornerRadius(6)
-                                        }
-                                    }
-                                }
-                                
-                                // Scrollable text container - max 8 lines then scroll
-                                ScrollView {
-                                    Text(generatedText)
-                                        .font(.system(size: 16))
-                                        .foregroundColor(.white)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .padding(16)
-                                        .textSelection(.enabled) // Allow text selection for copying
-                                }
-                                .frame(height: 160) // Fixed height for approximately 8 lines (20px per line + padding)
-                                .background(Color.white.opacity(0.1))
-                                .cornerRadius(16)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 16)
-                                        .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                                )
-                            }
-                                .padding(.horizontal, 24)
-                        }
-                        
-                        // Generate button
-                        Button(action: {
-                            Task {
-                                await generateText()
-                            }
-                        }) {
-                            Text("Generate")
-                                .font(.system(size: 17, weight: .semibold))
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 56)
-                                .background(
-                                    ZStack {
-                                        // Background image
-                                        Image(backgroundImage)
-                                            .resizable()
-                                            .aspectRatio(contentMode: .fill)
-                                            .clipped()
-                                        
-                                        // Dark overlay
-                                        Color.black.opacity(0.3)
-                                    }
-                                )
-                                .cornerRadius(28)
-                                .shadow(color: Color.black.opacity(0.2), radius: 8, x: 0, y: 4)
-                        }
-                        .disabled(userInput.isEmpty || isGenerating)
-                        .padding(.horizontal, 24)
-                    }
-                    .padding(.top, 32)
-                    
-                    Spacer()
-                }
-            }
-        }
-        .alert("Error", isPresented: $showError) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(error?.localizedDescription ?? "An unknown error occurred")
-        }
-        .fullScreenCover(isPresented: $showFullScreenText) {
-            FullScreenTextView(text: generatedText, title: title)
-        }
-        .onAppear {
-            // Load saved response when view appears
-            let savedResponse = responseManager.getResponse(for: title)
-            userInput = savedResponse.userInput
-            generatedText = savedResponse.generatedText
-        }
-    }
-    
-    private func generateText() async {
-        guard !userInput.isEmpty else { return }
-        
-        isGenerating = true
-        do {
-            let response = try await ToolPromptService.shared.generateResponse(
-                for: title,
-                input: userInput
-            )
-            print("✅ Generated text: \(response)")
-            await MainActor.run {
-                generatedText = response
-                // Save the response to persistent storage
-                responseManager.saveResponse(for: title, userInput: userInput, generatedText: response)
-            }
-        } catch {
-            print("❌ Error generating text: \(error)")
-            await MainActor.run {
-                self.error = error
-                showError = true
-            }
-        }
-        await MainActor.run {
-            isGenerating = false
-        }
-    }
-}
-
-// Full Screen Text View for better readability of long generated content with section copying
-struct FullScreenTextView: View {
-    @Environment(\.dismiss) var dismiss
-    let text: String
-    let title: String
-    @State private var fontSize: CGFloat = 16
-    @State private var copiedSectionIndex: Int? = nil
-    
-    // Split text into logical sections (by double line breaks or line breaks)
-    private var textSections: [String] {
-        // First try splitting by double line breaks (common in lyrics for verses/choruses)
-        let doubleSplit = text.components(separatedBy: "\n\n").filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        
-        // If we get good sections (2 or more), use them
-        if doubleSplit.count > 1 {
-            return doubleSplit
-        }
-        
-        // Otherwise, split by single line breaks and group into reasonable chunks
-        let lines = text.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        var sections: [String] = []
-        var currentSection: [String] = []
-        
-        for line in lines {
-            currentSection.append(line)
-            // Create a new section every 4-6 lines or if line looks like a section header
-            if currentSection.count >= 4 || line.lowercased().contains("verse") || line.lowercased().contains("chorus") || line.lowercased().contains("bridge") {
-                sections.append(currentSection.joined(separator: "\n"))
-                currentSection = []
-            }
-        }
-        
-        // Add remaining lines
-        if !currentSection.isEmpty {
-            sections.append(currentSection.joined(separator: "\n"))
-        }
-        
-        return sections.isEmpty ? [text] : sections
-    }
-    
-    var body: some View {
-        NavigationView {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                
-                VStack(spacing: 0) {
-                    // Header with controls
-                    HStack {
-                        Button("Done") {
-                            dismiss()
-                        }
-                        .foregroundColor(.white)
-                        
-                        Spacer()
-                        
-                        Text(title)
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(.white)
-                            .lineLimit(1)
-                        
-                        Spacer()
-                        
-                        // Font size controls
-                        HStack(spacing: 12) {
-                            Button(action: {
-                                fontSize = max(12, fontSize - 2)
-                            }) {
-                                Image(systemName: "textformat.size.smaller")
-                                    .foregroundColor(.white.opacity(0.8))
-                            }
-                            
-                            Button(action: {
-                                fontSize = min(24, fontSize + 2)
-                            }) {
-                                Image(systemName: "textformat.size.larger")
-                                    .foregroundColor(.white.opacity(0.8))
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 16)
-                    .background(Color.black)
-                    
-                    // Scrollable content with section-based copying
-                    ScrollView {
-                        LazyVStack(spacing: 20) {
-                            ForEach(Array(textSections.enumerated()), id: \.offset) { index, section in
-                                VStack(alignment: .leading, spacing: 8) {
-                                    // Section content
-                                    HStack(alignment: .top, spacing: 12) {
-                                        Text(section)
-                                            .font(.system(size: fontSize))
-                                            .foregroundColor(.white)
-                                            .lineSpacing(4)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .textSelection(.enabled)
-                                        
-                                        // Copy button for this section
-                                        Button(action: {
-                                            UIPasteboard.general.string = section
-                                            copiedSectionIndex = index
-                                            
-                                            // Reset the copied state after 2 seconds
-                                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                                                if copiedSectionIndex == index {
-                                                    copiedSectionIndex = nil
-                                                }
-                                            }
-                                        }) {
-                                            Image(systemName: copiedSectionIndex == index ? "checkmark" : "doc.on.doc")
-                                                .font(.system(size: 14))
-                                                .foregroundColor(copiedSectionIndex == index ? .green : .white.opacity(0.6))
-                                                .frame(width: 24, height: 24)
-                                                .background(Color.white.opacity(0.1))
-                                                .cornerRadius(6)
-                                        }
-                                    }
-                                    
-                                    // Section divider (except for last section)
-                                    if index < textSections.count - 1 {
-                                        Rectangle()
-                                            .fill(Color.white.opacity(0.1))
-                                            .frame(height: 1)
-                                            .padding(.top, 12)
-                                    }
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 24)
-                    }
-                    .background(Color.black)
-                    
-                    // Bottom toolbar
-                    HStack {
-                        Button(action: {
-                            UIPasteboard.general.string = text
-                        }) {
-                            HStack(spacing: 8) {
-                                Image(systemName: "doc.on.doc")
-                                Text("Copy All")
-                            }
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
-                            .background(Color.white.opacity(0.1))
-                            .cornerRadius(12)
-                        }
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 20)
-                    .background(Color.black)
-                }
-            }
-        }
-        .navigationBarHidden(true)
-    }
-}
-
-struct RainbowLoadingBar: View {
-    @State private var animationOffset: CGFloat = 0
-    @State private var opacity: Double = 0
-    @State private var scale: CGFloat = 0.8
-    
-    var body: some View {
-        // Container that matches textbox/button width exactly
-        Rectangle()
-            .fill(Color.clear)
-            .frame(height: 2)
-            .overlay(
-                ZStack(alignment: .leading) {
-                    // Background track
-                    Rectangle()
-                        .fill(Color.white.opacity(0.1))
-                        .frame(height: 2)
-                        .cornerRadius(1)
-                    
-                    // Animated gradient that flows across - properly contained
-                    GeometryReader { geometry in
-                        Rectangle()
-                            .fill(
-                                LinearGradient(
-                                    gradient: Gradient(colors: [
-                                        Color.yellow,
-                                        Color.pink,
-                                        Color.orange,
-                                        Color.yellow,
-                                        Color.pink,
-                                        Color.orange,
-                                        Color.yellow,
-                                        Color.pink,
-                                        Color.orange,
-                                        Color.yellow  // Multiple repetitions for seamless loop
-                                    ]),
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .frame(width: geometry.size.width * 3, height: 2)
-                            .cornerRadius(1)
-                            .offset(x: animationOffset)
-                            .animation(
-                                .linear(duration: 1.8)
-                                .repeatForever(autoreverses: false),
-                                value: animationOffset
-                            )
-                    }
-                    .clipped() // Prevent overflow beyond container
-                }
-            )
-            .opacity(opacity)
-            .scaleEffect(y: scale)
-            .animation(.easeInOut(duration: 0.3), value: opacity)
-            .animation(.easeInOut(duration: 0.3), value: scale)
-            .onAppear {
-                // Smooth entrance
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    opacity = 1.0
-                    scale = 1.0
-                }
-                // Start the flowing animation
-                startFlowingAnimation()
-            }
-    }
-    
-    private func startFlowingAnimation() {
-        animationOffset = 0  // Start at normal position
-        withAnimation(.linear(duration: 1.8).repeatForever(autoreverses: false)) {
-            // Move left by container width for perfect loop
-            animationOffset = -300  // Fixed width instead of screen width
-        }
-    }
-}
-
-struct TimePicker: UIViewRepresentable {
-    @Binding var text: String
-    let onUpdate: (String) -> Void
-    
-    func makeUIView(context: Context) -> UIPickerView {
-        let picker = UIPickerView()
-        picker.delegate = context.coordinator
-        picker.dataSource = context.coordinator
-        
-        // Set initial selection based on current text
-        if let time = parseTimeComponents(text) {
-            // Ensure we're within valid ranges
-            let minuteRow = max(0, min(time.minutes, 9))  // 0-9 -> 0-9
-            let secondRow = max(0, min(time.seconds, 59)) // 0-59 -> 0-59
-            picker.selectRow(minuteRow, inComponent: 0, animated: false)
-            picker.selectRow(secondRow, inComponent: 1, animated: false)
-        }
-        
-        return picker
-    }
-    
-    func updateUIView(_ uiView: UIPickerView, context: Context) {
-        if let time = parseTimeComponents(text) {
-            // Ensure we're within valid ranges
-            let minuteRow = max(0, min(time.minutes, 9))  // 0-9 -> 0-9
-            let secondRow = max(0, min(time.seconds, 59)) // 0-59 -> 0-59
-            uiView.selectRow(minuteRow, inComponent: 0, animated: false)
-            uiView.selectRow(secondRow, inComponent: 1, animated: false)
-        }
-    }
-    
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-    
-    private func parseTimeComponents(_ timeString: String) -> (minutes: Int, seconds: Int)? {
-        let components = timeString.split(separator: ":")
-        guard components.count == 2,
-              let minutes = Int(components[0]),
-              let seconds = Int(components[1]),
-              minutes >= 0, minutes <= 9,    // Validate minutes range
-              seconds >= 0, seconds <= 59    // Validate seconds range
-        else {
-            return nil
-        }
-        return (minutes, seconds)
-    }
-    
-    class Coordinator: NSObject, UIPickerViewDelegate, UIPickerViewDataSource {
-        let parent: TimePicker
-        
-        init(parent: TimePicker) {
-            self.parent = parent
-        }
-        
-        // Two components: minutes and seconds
-        func numberOfComponents(in pickerView: UIPickerView) -> Int {
-            return 2
-        }
-        
-        // Minutes: 0-9, Seconds: 0-59
-        func pickerView(_ pickerView: UIPickerView, numberOfRowsInComponent component: Int) -> Int {
-            return component == 0 ? 10 : 60  // 0-9 for minutes, 0-59 for seconds
-        }
-        
-        func pickerView(_ pickerView: UIPickerView, viewForRow row: Int, forComponent component: Int, reusing view: UIView?) -> UIView {
-            let label = (view as? UILabel) ?? UILabel()
-            // Format: single digit for minutes, leading zero for seconds
-            if component == 0 {
-                label.text = "\(row)"  // Minutes: 0-9
-            } else {
-                label.text = String(format: "%02d", row)  // Seconds: 00-59
-            }
-            label.textColor = .white
-            label.font = .systemFont(ofSize: 20, weight: .medium)
-            label.textAlignment = .center
-            return label
-        }
-        
-        func pickerView(_ pickerView: UIPickerView, didSelectRow row: Int, inComponent component: Int) {
-            let minutes = pickerView.selectedRow(inComponent: 0)  // 0-9
-            let seconds = pickerView.selectedRow(inComponent: 1)  // 0-59
-            let timeString = "\(minutes):\(String(format: "%02d", seconds))"
-            parent.text = timeString
-            parent.onUpdate(timeString)
-        }
-    }
-}
-
-struct TimePickerButton: View {
-    @Binding var text: String
-    let onUpdate: (String) -> Void
-    @State private var showingPicker = false
-    
-    var body: some View {
-        Button(action: {
-            showingPicker = true
-        }) {
-            Text(text)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(.white)
-                .frame(width: 45)
-                .padding(.vertical, 8)
-                // Remove the black background and let parent container color show through
-        }
-        .sheet(isPresented: $showingPicker) {
-            VStack(spacing: 0) {
-                // Header with X button
-                HStack {
-                    Spacer()
-                    Button(action: {
-                        showingPicker = false
-                    }) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 17, weight: .medium))
-                            .foregroundColor(.white)
-                            .padding(12)
-                            .contentShape(Rectangle())
-                    }
-                }
-                .frame(height: 44)
-                
-                // Picker
-                TimePicker(text: $text, onUpdate: onUpdate)
-                    .frame(height: 160)
-                
-                Spacer(minLength: 0)
-            }
-            .background(Color.black)
-            .presentationDetents([.height(250)])
-            .presentationDragIndicator(.visible)
-        }
-    }
-}
-
-// MARK: - Thrift Camera Flow
-struct ThriftCameraView: View {
-    @Binding var isPresented: Bool
-    let onImagesCapture: ([UIImage]) -> Void
-    @StateObject private var serpAPIService = SerpAPIService()
-    @State private var currentStep: ScanStep = .instructions
-    @State private var capturedImages: [UIImage] = []
-    @State private var selectedCategory: ItemCategory = .clothing
-    @State private var isAnalyzing = false
-    @State private var showingImagePicker = false
-    @State private var marketData: SerpSearchResult?
-    @State private var analysisError: String?
-    
-    enum ScanStep: CaseIterable {
-        case instructions
-        case fullItem
-        case brandTag
-        case fabricDetail
-        case analysis
-        
-        var title: String {
-            switch self {
-            case .instructions: return "Scan Clothing Items"
-            case .fullItem: return "Full Item"
-            case .brandTag: return "Brand Tag"
-            case .fabricDetail: return "Fabric Detail"
-            case .analysis: return "Analysis"
-            }
-        }
-        
-        var instruction: String {
-            switch self {
-            case .instructions: return "Follow these 3 steps for accurate results"
-            case .fullItem: return "Capture the entire clothing item"
-            case .brandTag: return "Focus on brand label and size tag"
-            case .fabricDetail: return "Close-up of fabric texture"
-            case .analysis: return "Analyzing your images"
-            }
-        }
-    }
-    
-    enum ItemCategory: String, CaseIterable {
-        case clothing = "Clothing"
-        case other = "Other"
-        
-        var icon: String {
-            switch self {
-            case .clothing: return "tshirt"
-            case .other: return "cube.box"
-            }
-        }
-    }
-    
-    var body: some View {
-        ZStack {
-            // Background
-            if currentStep == .instructions {
-                Color.white.ignoresSafeArea()
-            } else {
-                Color.black.ignoresSafeArea()
-            }
-            
-            switch currentStep {
-            case .instructions:
-                instructionsView
-            case .fullItem, .brandTag, .fabricDetail:
-                cameraView
-            case .analysis:
-                analysisView
-            }
-        }
-    }
-    
-    // MARK: - Instructions View
-    private var instructionsView: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                Button(action: { isPresented = false }) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(.black)
-                }
-                
-                Spacer()
-                
-                Button(action: { /* Settings */ }) {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(.black)
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 20)
-            
-            Spacer(minLength: 40)
-            
-            // Main Content
-            VStack(spacing: 32) {
-                // Icon
-                ZStack {
-                    Circle()
-                        .fill(Color.blue)
-                        .frame(width: 80, height: 80)
-                    
-                    Image(systemName: "tshirt")
-                        .font(.system(size: 36, weight: .medium))
-                        .foregroundColor(.white)
-                }
-                
-                // Title & Subtitle
-                VStack(spacing: 8) {
-                    Text("Scan Clothing Items")
-                        .font(.system(size: 28, weight: .bold))
-                        .foregroundColor(.black)
-                    
-                    Text("Follow these 3 steps for accurate results")
-                        .font(.system(size: 16))
-                        .foregroundColor(.gray)
-                        .multilineTextAlignment(.center)
-                }
-                
-                // Steps
-                VStack(spacing: 24) {
-                    stepRow(
-                        number: 1,
-                        title: "Full Item",
-                        description: "Take a photo or choose from gallery - capture the entire clothing item",
-                        imageName: "tshirt"
-                    )
-                    
-                    stepRow(
-                        number: 2,
-                        title: "Brand Tag",
-                        description: "Focus on brand labels and size tags for accurate brand recognition",
-                        imageName: "tag"
-                    )
-                    
-                    stepRow(
-                        number: 3,
-                        title: "Fabric Detail",
-                        description: "Close-up of fabric texture helps determine material and quality",
-                        imageName: "eye"
-                    )
-                }
-                .padding(.horizontal, 20)
-                
-                // Gallery Info
-                HStack(spacing: 12) {
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 16))
-                        .foregroundColor(.blue)
-                    
-                    Text("You can take new photos or choose existing ones from your gallery")
-                        .font(.system(size: 14))
-                        .foregroundColor(.gray)
-                        .multilineTextAlignment(.leading)
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 16)
-            }
-            
-            Spacer()
-            
-            // Continue Button
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    currentStep = .fullItem
-                }
-            }) {
-                Text("Continue")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 56)
-                    .background(Color.blue)
-                    .cornerRadius(16)
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 34)
-        }
-    }
-    
-    private func stepRow(number: Int, title: String, description: String, imageName: String) -> some View {
-        HStack(spacing: 16) {
-            // Step Icon
-            ZStack {
-                Circle()
-                    .fill(Color.blue)
-                    .frame(width: 40, height: 40)
-                
-                Image(systemName: imageName)
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(.white)
-            }
-            
-            // Content
-            VStack(alignment: .leading, spacing: 4) {
-                Text("\(number). \(title)")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(.black)
-                
-                Text(description)
-                    .font(.system(size: 15))
-                    .foregroundColor(.gray)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            
-            Spacer()
-            
-            // Example Image Placeholder
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.gray.opacity(0.2))
-                .frame(width: 60, height: 60)
-                .overlay(
-                    Image(systemName: imageName)
-                        .font(.system(size: 24))
-                        .foregroundColor(.gray)
-                )
-        }
-    }
-    
-    // MARK: - Camera View
-    private var cameraView: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                Button(action: goToPreviousStep) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(.white)
-                }
-                
-                Spacer()
-                
-                VStack(spacing: 4) {
-                    Text(currentStep.title)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundColor(.white)
-                    
-                    Text(currentStep.instruction)
-                        .font(.system(size: 13))
-                        .foregroundColor(.white.opacity(0.8))
-                }
-                
-                Spacer()
-                
-                Button(action: { isPresented = false }) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundColor(.white)
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 20)
-            
-            // Progress Indicators
-            VStack(spacing: 12) {
-                HStack(spacing: 12) {
-                    ForEach([ScanStep.fullItem, .brandTag, .fabricDetail], id: \.self) { step in
-                        if step == currentStep {
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(Color.white)
-                                .frame(width: 40, height: 4)
-                        } else if capturedImages.count >= stepIndex(step) {
-                            Circle()
-                                .fill(Color.green)
-                                .frame(width: 8, height: 8)
-                        } else {
-                            Circle()
-                                .stroke(Color.white.opacity(0.5), lineWidth: 1)
-                                .frame(width: 8, height: 8)
-                        }
-                    }
-                }
-                
-                // Helper text
-                if capturedImages.isEmpty {
-                    Text("📸 Take a photo or 🖼️ choose from gallery")
-                        .font(.system(size: 13))
-                        .foregroundColor(.white.opacity(0.7))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 6)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                }
-            }
-            .padding(.top, 16)
-            
-            Spacer()
-            
-            // Camera Preview
-            ZStack {
-                Rectangle()
-                    .fill(Color.gray.opacity(0.3))
-                
-                // Viewfinder
-                RoundedRectangle(cornerRadius: 20)
-                    .stroke(Color.white, lineWidth: 2)
-                    .frame(width: 300, height: 300)
-                
-                // Corner guides
-                VStack {
-                    HStack {
-                        CornerGuide(position: .topLeft)
-                        Spacer()
-                        CornerGuide(position: .topRight)
-                    }
-                    Spacer()
-                    HStack {
-                        CornerGuide(position: .bottomLeft)
-                        Spacer()
-                        CornerGuide(position: .bottomRight)
-                    }
-                }
-                .frame(width: 300, height: 300)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            
-            // Category Selection
-            HStack(spacing: 16) {
-                ForEach(ItemCategory.allCases, id: \.self) { category in
-                    Button(action: { selectedCategory = category }) {
-                        HStack(spacing: 8) {
-                            Image(systemName: category.icon)
-                                .font(.system(size: 16, weight: .medium))
-                            
-                            Text(category.rawValue)
-                                .font(.system(size: 16, weight: .medium))
-                        }
-                        .foregroundColor(selectedCategory == category ? .black : .white)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 12)
-                        .background(
-                            selectedCategory == category ? 
-                            Color.white : Color.white.opacity(0.2)
-                        )
-                        .cornerRadius(25)
-                    }
-                }
-            }
-            .padding(.horizontal, 20)
-            
-            // Controls
-            VStack(spacing: 20) {
-                // Photo Gallery Button (more prominent)
-                Button(action: { showingImagePicker = true }) {
-                    HStack(spacing: 8) {
-                        Image(systemName: capturedImages.isEmpty ? "photo.on.rectangle.angled" : "checkmark.circle.fill")
-                            .font(.system(size: 16, weight: .medium))
-                        
-                        Text(capturedImages.isEmpty ? "Choose from Gallery" : "Photo Selected ✓")
-                            .font(.system(size: 15, weight: .medium))
-                    }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 12)
-                    .background(capturedImages.isEmpty ? Color.white.opacity(0.2) : Color.green.opacity(0.3))
-                    .cornerRadius(25)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 25)
-                            .stroke(capturedImages.isEmpty ? Color.white.opacity(0.3) : Color.green.opacity(0.6), lineWidth: 1)
-                    )
-                }
-                
-                HStack(spacing: 60) {
-                    // Gallery (alternative access)
-                    Button(action: { showingImagePicker = true }) {
-                        Circle()
-                            .fill(Color.white.opacity(0.2))
-                            .frame(width: 50, height: 50)
-                            .overlay(
-                                Image(systemName: "photo.stack")
-                                    .font(.system(size: 20))
-                                    .foregroundColor(.white)
-                            )
-                    }
-                    
-                    // Capture
-                    Button(action: captureCurrentStep) {
-                        ZStack {
-                            Circle()
-                                .stroke(Color.white, lineWidth: 4)
-                                .frame(width: 80, height: 80)
-                            
-                            Circle()
-                                .fill(Color.white)
-                                .frame(width: 68, height: 68)
-                                
-                            // Camera icon inside
-                            Image(systemName: "camera")
-                                .font(.system(size: 24, weight: .medium))
-                                .foregroundColor(.black)
-                        }
-                    }
-                    
-                    // Switch Camera
-                    Button(action: {}) {
-                        Circle()
-                            .fill(Color.white.opacity(0.2))
-                            .frame(width: 50, height: 50)
-                            .overlay(
-                                Image(systemName: "camera.rotate")
-                                    .font(.system(size: 20, weight: .medium))
-                                    .foregroundColor(.white)
-                            )
-                    }
-                }
-            }
-            .padding(.top, 20)
-            .padding(.bottom, 50)
-        }
-                 .sheet(isPresented: $showingImagePicker) {
-            ThriftImagePicker { image in
-                capturedImages.append(image)
-                
-                // Add haptic feedback for successful selection
-                let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
-                impactFeedback.impactOccurred()
-                
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    goToNextStep()
-                }
-            }
-        }
-    }
-    
-    // MARK: - Analysis View
-    private var analysisView: some View {
-        ZStack {
-            // Gradient Background
-            LinearGradient(
-                gradient: Gradient(colors: [
-                    Color(red: 0.2, green: 0.6, blue: 0.4),
-                    Color(red: 0.1, green: 0.4, blue: 0.3)
-                ]),
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-            
-            VStack(spacing: 40) {
-                Spacer()
-                
-                // Selected Image Preview
-                if let lastImage = capturedImages.last {
-                    VStack(spacing: 16) {
-                        Image(uiImage: lastImage)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: 200, height: 300)
-                            .clipShape(RoundedRectangle(cornerRadius: 16))
-                            .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
-                        
-                        // Source indicator
-                        HStack(spacing: 8) {
-                            Image(systemName: "photo")
-                                .font(.system(size: 14))
-                                .foregroundColor(.white.opacity(0.7))
-                            
-                            Text("Image \(capturedImages.count) of 3")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundColor(.white.opacity(0.8))
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
-                    }
-                }
-                
-                VStack(spacing: 16) {
-                    Text("Just a moment...")
-                        .font(.system(size: 28, weight: .bold))
-                        .foregroundColor(.white)
-                    
-                    if let error = analysisError {
-                        Text("Analysis completed with some issues")
-                            .font(.system(size: 16))
-                            .foregroundColor(.white.opacity(0.8))
-                            .multilineTextAlignment(.center)
-                    } else if let marketData = marketData {
-                        Text("Found \(marketData.shoppingResults?.count ?? 0) market listings")
-                            .font(.system(size: 16))
-                            .foregroundColor(.white.opacity(0.8))
-                            .multilineTextAlignment(.center)
-                    } else {
-                        Text("Preparing your images for analysis")
-                            .font(.system(size: 16))
-                            .foregroundColor(.white.opacity(0.8))
-                            .multilineTextAlignment(.center)
-                    }
-                }
-                
-                Spacer()
-                
-                VStack(spacing: 20) {
-                    Text("Our AI is analyzing your images using advanced computer vision")
-                        .font(.system(size: 15))
-                        .foregroundColor(.white.opacity(0.7))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 40)
-                    
-                    ProgressView()
-                        .progressViewStyle(LinearProgressViewStyle(tint: .white))
-                        .frame(height: 4)
-                        .padding(.horizontal, 40)
-                }
-                
-                Spacer()
-            }
-        }
-        .onAppear {
-            // Perform real analysis with SerpAPI
-            Task {
-                await performMarketAnalysis()
-            }
-        }
-    }
-    
-    // MARK: - Market Analysis
-    private func performMarketAnalysis() async {
-        isAnalyzing = true
-        
-        do {
-            // Generate search query based on captured images and category
-            let searchQuery = generateSearchQuery()
-            
-            // Search eBay for used items
-            let ebayResults = try await serpAPIService.searchEBayItems(query: searchQuery, condition: "used")
-            
-            // Search Google Shopping for comparison
-            let googleResults = try await serpAPIService.searchGoogleShopping(query: searchQuery)
-            
-            // Combine and process results
-            await MainActor.run {
-                self.marketData = ebayResults
-                self.isAnalyzing = false
-                
-                // Pass captured images back to main app after analysis
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    self.onImagesCapture(self.capturedImages)
-                    self.isPresented = false
-                }
-            }
-        } catch {
-            await MainActor.run {
-                self.analysisError = error.localizedDescription
-                self.isAnalyzing = false
-                
-                // Still pass images even if analysis fails
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                    self.onImagesCapture(self.capturedImages)
-                    self.isPresented = false
-                }
-            }
-        }
-    }
-    
-    private func generateSearchQuery() -> String {
-        let category = selectedCategory.rawValue.lowercased()
-        let brandKeywords = ["vintage", "retro", "thrift", "secondhand"]
-        let randomBrand = brandKeywords.randomElement() ?? "vintage"
-        
-        return "\(randomBrand) \(category) thrift"
-    }
-    
-    // MARK: - Helper Methods
-    private func stepIndex(_ step: ScanStep) -> Int {
-        switch step {
-        case .fullItem: return 1
-        case .brandTag: return 2
-        case .fabricDetail: return 3
-        default: return 0
-        }
-    }
-    
-    private func captureCurrentStep() {
-        // Simulate capture
-        let simulatedImage = UIImage(systemName: "photo")!
-        capturedImages.append(simulatedImage)
-        
-        withAnimation(.easeInOut(duration: 0.3)) {
-            goToNextStep()
-        }
-    }
-    
-    private func goToNextStep() {
-        switch currentStep {
-        case .instructions:
-            currentStep = .fullItem
-        case .fullItem:
-            currentStep = .brandTag
-        case .brandTag:
-            currentStep = .fabricDetail
-        case .fabricDetail:
-            currentStep = .analysis
-        case .analysis:
-            isPresented = false
-        }
-    }
-    
-    private func goToPreviousStep() {
-        switch currentStep {
-        case .fullItem:
-            currentStep = .instructions
-        case .brandTag:
-            currentStep = .fullItem
-        case .fabricDetail:
-            currentStep = .brandTag
-        case .analysis:
-            currentStep = .fabricDetail
-        default:
-            isPresented = false
-        }
-    }
-    
-    // MARK: - eBay Price Analysis (Based on rtl251/my-freestyle-project)
-    private func analyzeWithEBayAPI(brand: String, itemType: String, condition: String = "used") async -> EBayPriceAnalysis? {
-        // Based on: https://github.com/rtl251/my-freestyle-project
-        // This implements the same eBay sold listings logic in Swift
-        
-        let keywords = "\(brand) \(itemType)"
-        let excludedTerms = "broken damaged parts repair"
-        
-        do {
-            let priceData = try await fetchEBaySoldListings(
-                keywords: keywords,
-                excludedKeywords: excludedTerms,
-                condition: condition,
-                maxResults: 100
-            )
-            
-            return generateThriftAnalysis(from: priceData)
-        } catch {
-            print("eBay API Error: \(error)")
-            return nil
-        }
-    }
-    
-    private func fetchEBaySoldListings(keywords: String, excludedKeywords: String, condition: String, maxResults: Int) async throws -> EBaySoldData {
-        // UPDATED: Using Browse API (Finding API was decommissioned Feb 4, 2025)
-        // Based on: https://developer.ebay.com/api-docs/buy/browse/resources/methods
-        
-        // Note: Browse API doesn't have sold listings search - this is a major limitation
-        // We'll need to use current listings and estimate values differently
-        
-        let encodedKeywords = keywords.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? keywords
-        let encodedExcluded = excludedKeywords.components(separatedBy: " ").joined(separator: "%20-")
-        
-        guard let url = URL(string: "https://api.ebay.com/buy/browse/v1/item_summary/search?q=\(encodedKeywords)%20-\(encodedExcluded)&limit=\(min(maxResults, 200))&sort=newlyListed") else {
-            throw EBayError.invalidURL
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer YOUR_OAUTH_TOKEN", forHTTPHeaderField: "Authorization")
-        request.setValue("EBAY_US", forHTTPHeaderField: "X-EBAY-C-MARKETPLACE-ID")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let (data, _) = try await URLSession.shared.data(for: request)
-        return try parseBrowseAPIResponse(data)
-    }
-    
-    private func parseBrowseAPIResponse(_ data: Data) throws -> EBaySoldData {
-        // Parse Browse API JSON response (different from old XML Finding API)
-        struct BrowseResponse: Codable, Equatable {
-            let itemSummaries: [ItemSummary]?
-            let total: Int?
-        }
-        
-        struct ItemSummary: Codable, Equatable {
-            let title: String?
-            let price: PriceInfo?
-            let itemEndDate: String?
-        }
-        
-        struct PriceInfo: Codable, Equatable {
-            let value: String?
-            let currency: String?
-        }
-        
-        let decoder = JSONDecoder()
-        let response = try decoder.decode(BrowseResponse.self, from: data)
-        
-        let items = response.itemSummaries?.compactMap { summary -> SoldItem? in
-            guard let title = summary.title,
-                  let priceValue = summary.price?.value,
-                  let price = Double(priceValue),
-                  let endDate = summary.itemEndDate else {
-                return nil
-            }
-            return SoldItem(title: title, price: price, dateSold: endDate)
-        } ?? []
-        
-        return EBaySoldData(
-            items: items,
-            totalResults: response.total ?? items.count
-        )
-    }
-    
-    
-    
-    private func generateThriftAnalysis(from data: EBaySoldData) -> EBayPriceAnalysis {
-        let prices = data.items.map { $0.price }
-        let avgPrice = prices.reduce(0, +) / Double(prices.count)
-        let minPrice = prices.min() ?? 0
-        let maxPrice = prices.max() ?? 0
-        
-        return EBayPriceAnalysis(
-            averagePrice: avgPrice,
-            priceRange: (minPrice, maxPrice),
-            totalSold: data.totalResults,
-            thriftRecommendation: generateThriftRecommendation(avgPrice: avgPrice),
-            recentSales: data.items.prefix(5).map { $0 }
-        )
-    }
-    
-         private func generateThriftRecommendation(avgPrice: Double) -> String {
-         // Adjusted for current listings (not sold) - more conservative estimates
-         let goodDeal = avgPrice * 0.3   // 30% of current market (deeper discount needed for thrift)
-         let fairPrice = avgPrice * 0.5   // 50% of current market
-         let overpriced = avgPrice * 0.7  // 70% of current market
-         
-         return """
-         📊 Thrift Value Analysis (Current Market):
-         ✅ Great Deal: Under $\(String(format: "%.0f", goodDeal))
-         ⭐ Fair Price: $\(String(format: "%.0f", goodDeal))-\(String(format: "%.0f", fairPrice))
-         ❌ Overpriced: Above $\(String(format: "%.0f", overpriced))
-         💰 Current Market Avg: $\(String(format: "%.2f", avgPrice))
-         
-         ⚠️ Note: Based on current listings (sold data no longer available)
-         """
-     }
-}
-
-// MARK: - eBay Data Models
-struct EBaySoldData {
-    let items: [SoldItem]
-    let totalResults: Int
-}
-
-struct SoldItem {
-    let title: String
-    let price: Double
-    let dateSold: String
-}
-
-struct EBayPriceAnalysis {
-    let averagePrice: Double
-    let priceRange: (min: Double, max: Double)
-    let totalSold: Int
-    let thriftRecommendation: String
-    let recentSales: [SoldItem]
-}
-
-enum EBayError: Error {
-    case invalidURL
-    case parsingError
-    case apiError(String)
-}
-
-// MARK: - Corner Guide
-struct CornerGuide: View {
-    enum Position {
-        case topLeft, topRight, bottomLeft, bottomRight
-    }
-    
-    let position: Position
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            if position == .topLeft || position == .topRight {
-                Rectangle()
-                    .fill(Color.white)
-                    .frame(width: 2, height: 20)
-            }
-            
-            HStack(spacing: 0) {
-                if position == .topLeft || position == .bottomLeft {
-                    Rectangle()
-                        .fill(Color.white)
-                        .frame(width: 20, height: 2)
-                }
-                
-                if position == .topRight || position == .bottomRight {
-                    Rectangle()
-                        .fill(Color.white)
-                        .frame(width: 20, height: 2)
-                }
-            }
-            
-            if position == .bottomLeft || position == .bottomRight {
-                Rectangle()
-                    .fill(Color.white)
-                    .frame(width: 2, height: 20)
-            }
+    // Filter specifically for sold shopping results
+    private func filterSoldShoppingResults(_ shoppingResults: [ShoppingResult]) -> [ShoppingResult] {
+        // First apply deletion filtering, then availability filtering
+        let notDeletedResults = getFilteredShoppingResults(shoppingResults)
+        return notDeletedResults.filter { result in
+            let hasPrice = (result.extractedPrice != nil && result.extractedPrice ?? 0 > 0) || 
+                         (result.price != nil && result.price != "N/A" && !result.price!.isEmpty)
+            let status = inferShoppingAvailabilityStatus(title: result.title, condition: result.condition, source: result.source)
+            return hasPrice && status == "sold"
         }
     }
 }
@@ -14002,7 +17012,202 @@ struct ThriftImagePicker: UIViewControllerRepresentable {
     }
 }
 
-// MARK: - Detail Card Component
+// MARK: - Missing Components
+
+struct TimePickerButton: View {
+    @Binding var text: String
+    let onUpdate: (String) -> Void
+    @State private var showingPicker = false
+    
+    var body: some View {
+        Button(action: {
+            showingPicker = true
+        }) {
+            Text(text)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.white)
+                .frame(width: 45)
+                .padding(.vertical, 8)
+        }
+        .sheet(isPresented: $showingPicker) {
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Button(action: {
+                        showingPicker = false
+                    }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 17, weight: .medium))
+                            .foregroundColor(.white)
+                            .padding(12)
+                            .contentShape(Rectangle())
+                    }
+                }
+                .frame(height: 44)
+                
+                TimePicker(text: $text, onUpdate: onUpdate)
+                    .frame(height: 160)
+                
+                Spacer(minLength: 0)
+            }
+            .background(Color.black)
+            .presentationDetents([.height(250)])
+            .presentationDragIndicator(.visible)
+        }
+    }
+}
+
+struct TimePicker: UIViewRepresentable {
+    @Binding var text: String
+    let onUpdate: (String) -> Void
+    
+    func makeUIView(context: Context) -> UIPickerView {
+        let picker = UIPickerView()
+        picker.delegate = context.coordinator
+        picker.dataSource = context.coordinator
+        
+        if let time = parseTimeComponents(text) {
+            let minuteRow = max(0, min(time.minutes, 9))
+            let secondRow = max(0, min(time.seconds, 59))
+            picker.selectRow(minuteRow, inComponent: 0, animated: false)
+            picker.selectRow(secondRow, inComponent: 1, animated: false)
+        }
+        
+        return picker
+    }
+    
+    func updateUIView(_ uiView: UIPickerView, context: Context) {
+        if let time = parseTimeComponents(text) {
+            let minuteRow = max(0, min(time.minutes, 9))
+            let secondRow = max(0, min(time.seconds, 59))
+            uiView.selectRow(minuteRow, inComponent: 0, animated: false)
+            uiView.selectRow(secondRow, inComponent: 1, animated: false)
+        }
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+    
+    private func parseTimeComponents(_ timeString: String) -> (minutes: Int, seconds: Int)? {
+        let components = timeString.split(separator: ":")
+        guard components.count == 2,
+              let minutes = Int(components[0]),
+              let seconds = Int(components[1]),
+              minutes >= 0, minutes <= 9,
+              seconds >= 0, seconds <= 59
+        else {
+            return nil
+        }
+        return (minutes, seconds)
+    }
+    
+    class Coordinator: NSObject, UIPickerViewDelegate, UIPickerViewDataSource {
+        let parent: TimePicker
+        
+        init(parent: TimePicker) {
+            self.parent = parent
+        }
+        
+        func numberOfComponents(in pickerView: UIPickerView) -> Int {
+            return 2
+        }
+        
+        func pickerView(_ pickerView: UIPickerView, numberOfRowsInComponent component: Int) -> Int {
+            return component == 0 ? 10 : 60
+        }
+        
+        func pickerView(_ pickerView: UIPickerView, viewForRow row: Int, forComponent component: Int, reusing view: UIView?) -> UIView {
+            let label = (view as? UILabel) ?? UILabel()
+            if component == 0 {
+                label.text = "\(row)"
+            } else {
+                label.text = String(format: "%02d", row)
+            }
+            label.textColor = .white
+            label.font = .systemFont(ofSize: 20, weight: .medium)
+            label.textAlignment = .center
+            return label
+        }
+        
+        func pickerView(_ pickerView: UIPickerView, didSelectRow row: Int, inComponent component: Int) {
+            let minutes = pickerView.selectedRow(inComponent: 0)
+            let seconds = pickerView.selectedRow(inComponent: 1)
+            let timeString = "\(minutes):\(String(format: "%02d", seconds))"
+            parent.text = timeString
+            parent.onUpdate(timeString)
+        }
+    }
+}
+
+struct ToolDetailView: View {
+    @Environment(\.dismiss) var dismiss
+    let title: String
+    let description: String
+    let backgroundImage: String
+    @State private var userInput = ""
+    @State private var generatedText = ""
+    @State private var isGenerating = false
+    
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                Color.black.ignoresSafeArea()
+                
+                VStack(spacing: 0) {
+                    VStack(spacing: 0) {
+                        HStack {
+                            Text(title)
+                                .font(.system(size: 28, weight: .bold))
+                                .foregroundColor(.white)
+                            Spacer()
+                            Button(action: { dismiss() }) {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(.white.opacity(0.7))
+                                    .padding(8)
+                                    .background(Color.white.opacity(0.1))
+                                    .clipShape(Circle())
+                            }
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.top, geometry.safeAreaInsets.top + 1)
+                        
+                        Text(description)
+                            .font(.system(size: 16))
+                            .foregroundColor(.white.opacity(0.7))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
+                            .padding(.top, 16)
+                            .padding(.bottom, 24)
+                    }
+                    .background(
+                        ZStack {
+                            Image(backgroundImage)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(maxWidth: .infinity)
+                            
+                            LinearGradient(
+                                gradient: Gradient(stops: [
+                                    .init(color: Color.clear, location: 0.0),
+                                    .init(color: Color.black.opacity(0.4), location: 0.5),
+                                    .init(color: Color.black.opacity(0.95), location: 1.0)
+                                ]),
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        }
+                        .ignoresSafeArea(.all, edges: .top)
+                    )
+                    
+                    Spacer()
+                }
+            }
+        }
+    }
+}
+
 struct DetailCard: View {
     let icon: String
     let title: String
@@ -14032,7 +17237,44 @@ struct DetailCard: View {
     }
 }
 
-// MARK: - Image Expansion View
+struct ImagePicker: UIViewControllerRepresentable {
+    @Environment(\.presentationMode) var presentationMode
+    @Binding var image: UIImage?
+
+    func makeUIViewController(context: UIViewControllerRepresentableContext<ImagePicker>) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.delegate = context.coordinator
+        picker.sourceType = .photoLibrary
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: UIViewControllerRepresentableContext<ImagePicker>) {
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        let parent: ImagePicker
+
+        init(_ parent: ImagePicker) {
+            self.parent = parent
+        }
+
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            if let uiImage = info[.originalImage] as? UIImage {
+                parent.image = uiImage
+            }
+            parent.presentationMode.wrappedValue.dismiss()
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.presentationMode.wrappedValue.dismiss()
+        }
+    }
+}
+
 struct ImageExpansionView: View {
     let imageURL: String
     @Environment(\.dismiss) private var dismiss
@@ -14040,14 +17282,45 @@ struct ImageExpansionView: View {
     var body: some View {
         NavigationView {
             GeometryReader { geometry in
-                AsyncImage(url: URL(string: imageURL)) { image in
-                    image
+                if imageURL.hasPrefix("http") {
+                    AsyncImage(url: URL(string: imageURL)) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .clipped()
+                        case .failure(_):
+                            VStack(spacing: 16) {
+                                Image(systemName: "photo.fill")
+                                    .font(.system(size: 50))
+                                    .foregroundColor(.white.opacity(0.6))
+                                Text("Image not available")
+                                    .font(.system(size: 18, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.9))
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        case .empty:
+                            VStack {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                Text("Loading...")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.white.opacity(0.8))
+                                    .padding(.top, 8)
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        @unknown default:
+                            EmptyView()
+                        }
+                    }
+                } else {
+                    Image(imageURL)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } placeholder: {
-                    ProgressView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipped()
                 }
             }
             .background(Color.black)
@@ -14063,3 +17336,2107 @@ struct ImageExpansionView: View {
         }
     }
 }
+
+struct ThriftCameraView: View {
+    @Binding var isPresented: Bool
+    let onImagesCapture: ([UIImage]) -> Void
+    @StateObject private var serpAPIService = SerpAPIService()
+    @StateObject private var cameraManager = CameraManager()
+    @State private var currentStep: ScanStep = .capture
+    @State private var capturedImage: UIImage?
+    @State private var isAnalyzing = false
+    @State private var showingImagePicker = false
+    @State private var marketData: SerpSearchResult?
+    @State private var analysisError: String?
+    
+    enum ScanStep: CaseIterable {
+        case capture
+        case analysis
+        
+        var title: String {
+            switch self {
+            case .capture: return "Full Item"
+            case .analysis: return "Analysis"
+            }
+        }
+        
+        var instruction: String {
+            switch self {
+            case .capture: return "Capture the entire item"
+            case .analysis: return "Analyzing your image"
+            }
+        }
+    }
+    
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            
+            switch currentStep {
+            case .capture:
+                cameraView
+            case .analysis:
+                analysisView
+            }
+        }
+
+    }
+    
+    private var cameraView: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button(action: { 
+                    let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+                    impactFeedback.impactOccurred()
+                    
+                    // Stop camera immediately for faster dismissal
+                    cameraManager.stopSession()
+                    
+                    isPresented = false 
+                }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundColor(.white)
+                }
+                
+                Spacer()
+                
+                VStack(spacing: 4) {
+                    Text(currentStep.title)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(.white)
+                    
+                    Text(currentStep.instruction)
+                        .font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.8))
+                }
+                
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+            
+            Spacer()
+            
+            ZStack {
+                // Camera Preview
+                CameraPreviewView(cameraManager: cameraManager)
+                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                
+                RoundedRectangle(cornerRadius: 20)
+                    .stroke(Color.white, lineWidth: 2)
+                    .frame(width: 300, height: 300)
+                
+                VStack {
+                    HStack {
+                        CornerGuide(position: .topLeft)
+                        Spacer()
+                        CornerGuide(position: .topRight)
+                    }
+                    Spacer()
+                    HStack {
+                        CornerGuide(position: .bottomLeft)
+                        Spacer()
+                        CornerGuide(position: .bottomRight)
+                    }
+                }
+                .frame(width: 300, height: 300)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            
+            VStack(spacing: 20) {
+                HStack(spacing: 60) {
+                    // Gallery Button
+                    Button(action: { showingImagePicker = true }) {
+                        Circle()
+                            .fill(Color.white.opacity(0.2))
+                            .frame(width: 50, height: 50)
+                            .overlay(
+                                Image(systemName: "photo.stack")
+                                    .font(.system(size: 20, weight: .medium))
+                                    .foregroundColor(.white)
+                            )
+                    }
+                    
+                    // Main Capture Button
+                    Button(action: captureCurrentStep) {
+                        ZStack {
+                            Circle()
+                                .stroke(Color.white, lineWidth: 4)
+                                .frame(width: 80, height: 80)
+                            
+                            Circle()
+                                .fill(Color.white)
+                                .frame(width: 68, height: 68)
+                                
+                            Image(systemName: "camera")
+                                .font(.system(size: 24, weight: .medium))
+                                .foregroundColor(.black)
+                        }
+                    }
+                    
+                    // Empty spacer to balance the layout
+                    Spacer()
+                        .frame(width: 50, height: 50)
+                }
+            }
+            .padding(.top, 20)
+            .padding(.bottom, 50)
+        }
+        .sheet(isPresented: $showingImagePicker) {
+            ThriftImagePicker { image in
+                capturedImage = image
+                print("📷 Successfully selected photo from library - size: \(image.size)")
+                
+                let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+                impactFeedback.impactOccurred()
+                
+                // Start API calls immediately after photo selection (same as camera capture)
+                Task {
+                    await performMarketAnalysis()
+                }
+                
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    goToNextStep()
+                }
+            }
+        }
+    }
+    
+    private var analysisView: some View {
+        ZStack {
+            Color(red: 0.96, green: 0.94, blue: 0.89)
+                .ignoresSafeArea()
+            
+            ZStack(alignment: .topLeading) {
+                // Main content
+                VStack(spacing: 40) {
+                    Spacer()
+                    
+                    if let image = capturedImage {
+                        VStack(spacing: 16) {
+                            Image(uiImage: image)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 200, height: 300)
+                                .clipShape(RoundedRectangle(cornerRadius: 16))
+                                .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
+                        }
+                    }
+                
+                    VStack(spacing: 16) {
+                        if let error = analysisError {
+                            Text("Analysis Complete!")
+                            .font(.system(size: 28, weight: .bold))
+                            .foregroundColor(.black)
+                        } else if let marketData = marketData {
+                            Text("Analysis Complete!")
+                                .font(.system(size: 28, weight: .bold))
+                                .foregroundColor(.black)
+                        } else if isAnalyzing {
+                            Text("Analyzing...")
+                                .font(.system(size: 28, weight: .bold))
+                                .foregroundColor(.black)
+                        } else {
+                            Text("Ready")
+                                .font(.system(size: 28, weight: .bold))
+                                .foregroundColor(.black)
+                        }
+                        
+                        if let error = analysisError {
+                            Text("Analysis completed with results")
+                                .font(.system(size: 16))
+                                .foregroundColor(.black.opacity(0.7))
+                                .multilineTextAlignment(.center)
+                        } else if let marketData = marketData {
+                            Text("Found \(marketData.shoppingResults?.count ?? 0) market listings")
+                                .font(.system(size: 16))
+                                .foregroundColor(.black.opacity(0.7))
+                                .multilineTextAlignment(.center)
+                        } else if isAnalyzing {
+                            Text("Running market analysis...")
+                                .font(.system(size: 16))
+                                .foregroundColor(.black.opacity(0.7))
+                                .multilineTextAlignment(.center)
+                        } else {
+                            Text("Tap to capture and analyze")
+                                .font(.system(size: 16))
+                                .foregroundColor(.black.opacity(0.7))
+                                .multilineTextAlignment(.center)
+                        }
+                    }
+                    
+                    Spacer()
+                    
+                    VStack(spacing: 20) {
+                        if isAnalyzing {
+                            Text("AI is analyzing your image and searching market data")
+                            .font(.system(size: 15))
+                            .foregroundColor(.black.opacity(0.6))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 40)
+                        } else if marketData != nil || analysisError != nil {
+                            Text("Analysis complete - tap anywhere to continue")
+                                .font(.system(size: 15))
+                                .foregroundColor(.black.opacity(0.6))
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 40)
+                        } else {
+                            Text("Ready to capture and analyze your thrift find")
+                                .font(.system(size: 15))
+                                .foregroundColor(.black.opacity(0.6))
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 40)
+                        }
+                        
+                        if isAnalyzing {
+                        ProgressView()
+                            .progressViewStyle(LinearProgressViewStyle(tint: .black.opacity(0.7)))
+                            .frame(height: 4)
+                            .padding(.horizontal, 40)
+                        }
+                    }
+                    
+                    Spacer()
+                }
+            }
+        }
+    }
+    
+    private func performMarketAnalysis() async {
+        isAnalyzing = true
+        
+        do {
+            let searchQuery = generateSearchQuery()
+            
+            // Run market data searches in parallel first (faster APIs)
+            async let ebayResults = serpAPIService.searchEBayItems(query: searchQuery, condition: "used")
+            async let googleResults = serpAPIService.searchGoogleShopping(query: searchQuery)
+            
+            // Wait for market data first
+            let (eBayData, googleData) = try await (ebayResults, googleResults)
+            
+            // Proceed with image immediately with market data
+            await MainActor.run {
+                self.marketData = eBayData
+                
+                if let image = self.capturedImage {
+                    // Create song with market data ready
+                    var capturedImages = [image]
+                    self.onImagesCapture(capturedImages)
+                }
+                self.isPresented = false
+                self.isAnalyzing = false
+            }
+            
+            // Run vision analyses in background (slower APIs) after navigation - only if not cached
+            Task.detached {
+                do {
+                    // Capture the image reference before the async calls
+                    guard let capturedImage = self.capturedImage else { return }
+                    
+                    // Check if already cached to avoid unnecessary API calls
+                    let hasClothingDetails = AnalysisResultsCache.shared.getClothingDetails(for: capturedImage) != nil
+                    let hasTitle = AnalysisResultsCache.shared.getGeneratedTitle(for: capturedImage) != nil
+                    
+                    if hasClothingDetails && hasTitle {
+                        print("📦 Background analysis skipped - already cached")
+                        return
+                    }
+                    
+                    print("🔍 Running background analysis for missing data - clothing: \(!hasClothingDetails), title: \(!hasTitle)")
+                    
+                    // Only run missing analyses
+                    async let clothingAnalysis = hasClothingDetails ? nil : self.performClothingAnalysis()
+                    async let titleGeneration = hasTitle ? nil : self.performTitleGeneration()
+                    
+                    let (clothingDetails, generatedTitle) = try await (clothingAnalysis, titleGeneration)
+                    
+                    // Store results in cache for when user views the analysis
+                    if let details = clothingDetails {
+                        AnalysisResultsCache.shared.storeClothingDetails(details, for: capturedImage)
+                    }
+                    if let title = generatedTitle {
+                        AnalysisResultsCache.shared.storeGeneratedTitle(title, for: capturedImage)
+                    }
+                } catch {
+                    print("⚠️ Background analysis failed: \(error)")
+                }
+            }
+            
+        } catch {
+            await MainActor.run {
+                self.analysisError = error.localizedDescription
+                self.isAnalyzing = false
+                
+                // Immediately proceed without artificial delay
+                    if let image = self.capturedImage {
+                        self.onImagesCapture([image])
+                    }
+                    self.isPresented = false
+                }
+            }
+        }
+    
+    // MARK: - Parallel Analysis Functions
+    private func performClothingAnalysis() async throws -> ClothingDetails? {
+        guard let image = capturedImage else { return nil }
+        
+        let prompt = """
+        Analyze this clothing item and provide details in this exact JSON format:
+        {
+            "brand": "brand name or 'Unknown'",
+            "category": "category like 'Shirt', 'Pants', 'Dress', etc.",
+            "color": "primary color",
+            "size": "size if visible or 'Unknown'",
+            "material": "material type if visible or 'Unknown'",
+            "style": "style description",
+            "condition": "condition assessment",
+            "estimatedValue": "estimated resale value or 'Unknown'",
+            "isAuthentic": true/false or null if unknown
+        }
+        Be specific and accurate. If information isn't clearly visible, use 'Unknown' or null.
+        """
+        
+        do {
+            let response = try await OpenAIService.shared.generateVisionCompletion(
+                prompt: prompt,
+                images: [image],
+                maxTokens: 500,
+                temperature: 0.3
+            )
+            
+            return parseClothingDetailsResponse(response)
+        } catch {
+            print("🔍 Clothing analysis failed: \(error)")
+            return nil
+        }
+    }
+    
+    private func performTitleGeneration() async throws -> String? {
+        guard let image = capturedImage else { return nil }
+        
+        let prompt = """
+        Generate a concise, descriptive title for this thrift item for resale. 
+        Format: [Brand/Style] [Type] [Key Features]
+        Examples: "Vintage Levi's Denim Jacket", "Nike Air Force 1 Sneakers", "Floral Midi Dress"
+        Keep it under 6 words and focus on the most sellable aspects.
+        """
+        
+        do {
+            let response = try await OpenAIService.shared.generateVisionCompletion(
+                prompt: prompt,
+                images: [image],
+                maxTokens: 50,
+                temperature: 0.7
+            )
+            
+            return response.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            print("🏷️ Title generation failed: \(error)")
+            return nil
+        }
+    }
+    
+    private func parseClothingDetailsResponse(_ response: String) -> ClothingDetails? {
+        // Extract JSON from response if it contains other text
+        let jsonStart = response.firstIndex(of: "{") ?? response.startIndex
+        let jsonEnd = response.lastIndex(of: "}") ?? response.endIndex
+        let jsonString = String(response[jsonStart...jsonEnd])
+        
+        guard let data = jsonString.data(using: .utf8) else { return nil }
+        
+        do {
+            let decoder = JSONDecoder()
+            return try decoder.decode(ClothingDetails.self, from: data)
+        } catch {
+            print("🔍 Failed to decode clothing details: \(error)")
+            return nil
+        }
+    }
+    
+    private func generateSearchQuery() -> String {
+        let brandKeywords = ["vintage", "retro", "thrift", "secondhand"]
+        let randomBrand = brandKeywords.randomElement() ?? "vintage"
+        
+        return "\(randomBrand) item thrift"
+    }
+    
+    private func captureCurrentStep() {
+        print("📷 Capture button pressed!")
+        
+        // Add haptic feedback
+        let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+        impactFeedback.impactOccurred()
+        
+        print("📷 Camera ready status: \(cameraManager.isCameraReady)")
+        
+        cameraManager.capturePhoto { [self] image in
+            DispatchQueue.main.async {
+                if let capturedPhoto = image {
+                    self.capturedImage = capturedPhoto
+                    print("📷 Successfully captured photo - size: \(capturedPhoto.size)")
+                    
+                    // Start API calls immediately after photo capture
+                    Task {
+                        await self.performMarketAnalysis()
+                    }
+                } else {
+                    print("📷 Failed to capture photo, using fallback")
+                    // Fallback to a system image if capture fails
+                    self.capturedImage = UIImage(systemName: "photo")
+                }
+                
+                print("📷 About to transition to analysis step")
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    self.goToNextStep()
+                }
+            }
+        }
+    }
+    
+    private func goToNextStep() {
+        print("📷 goToNextStep called - current step: \(currentStep)")
+        switch currentStep {
+        case .capture:
+            currentStep = .analysis
+            print("📷 Switched to analysis step")
+        case .analysis:
+            print("📷 Analysis complete - dismissing camera")
+            isPresented = false
+        }
+    }
+}
+
+struct CornerGuide: View {
+    enum Position {
+        case topLeft, topRight, bottomLeft, bottomRight
+    }
+    
+    let position: Position
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            if position == .topLeft || position == .topRight {
+                Rectangle()
+                    .fill(Color.white)
+                    .frame(width: 2, height: 20)
+            }
+            
+            HStack(spacing: 0) {
+                if position == .topLeft || position == .bottomLeft {
+                    Rectangle()
+                        .fill(Color.white)
+                        .frame(width: 20, height: 2)
+                }
+                
+                if position == .topRight || position == .bottomRight {
+                    Rectangle()
+                        .fill(Color.white)
+                        .frame(width: 20, height: 2)
+                }
+            }
+            
+            if position == .bottomLeft || position == .bottomRight {
+                Rectangle()
+                    .fill(Color.white)
+                    .frame(width: 2, height: 20)
+            }
+        }
+    }
+}
+
+// MARK: - Camera Preview Implementation
+struct CameraPreviewView: UIViewRepresentable {
+    @ObservedObject var cameraManager: CameraManager
+    
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .black
+        cameraManager.setupCamera(in: view)
+        return view
+    }
+    
+    func updateUIView(_ uiView: UIView, context: Context) {
+        // Update camera preview frame when view bounds change
+        DispatchQueue.main.async {
+            cameraManager.updatePreviewFrame(to: uiView.bounds)
+        }
+        
+        // Setup camera when it becomes ready (will be smart about not re-setting up)
+        if cameraManager.isCameraReady {
+            cameraManager.setupCamera(in: uiView)
+        }
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject {
+        let parent: CameraPreviewView
+        
+        init(_ parent: CameraPreviewView) {
+            self.parent = parent
+        }
+    }
+}
+
+// MARK: - Camera Manager
+class CameraManager: NSObject, ObservableObject {
+    @Published var isCameraReady = false
+    @Published var isUsingFrontCamera = false
+    private var captureSession: AVCaptureSession?
+    private var videoPreviewLayer: AVCaptureVideoPreviewLayer?
+    private var photoOutput: AVCapturePhotoOutput?
+    private var currentCameraInput: AVCaptureDeviceInput?
+    private var currentPhotoDelegate: PhotoCaptureDelegate?
+    private var isCapturingPhoto = false
+    private var hasSetupPreview = false
+    
+    override init() {
+        super.init()
+        checkCameraPermission()
+    }
+    
+    func checkCameraPermission() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            print("📷 Camera permission already authorized")
+            setupCaptureSession()
+        case .notDetermined:
+            print("📷 Requesting camera permission")
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                if granted {
+                    print("📷 Camera permission granted")
+                    DispatchQueue.main.async {
+                        self.setupCaptureSession()
+                    }
+                } else {
+                    print("📷 Camera permission denied by user")
+                }
+            }
+        case .denied, .restricted:
+            print("📷 Camera access denied or restricted")
+        @unknown default:
+            print("📷 Unknown camera permission status")
+            break
+        }
+    }
+    
+    func setupCaptureSession() {
+        print("📷 Starting camera session setup on background thread")
+        
+        DispatchQueue.global(qos: .userInteractive).async {
+            // Create session on background thread
+            let session = AVCaptureSession()
+            session.sessionPreset = .photo
+            
+            // Add video input (start with back camera)
+            guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+                  let videoInput = try? AVCaptureDeviceInput(device: camera),
+                  session.canAddInput(videoInput) else {
+                print("📷 Failed to setup camera input")
+                return
+            }
+            
+            session.addInput(videoInput)
+            
+            // Add photo output
+            let photoOutput = AVCapturePhotoOutput()
+            if session.canAddOutput(photoOutput) {
+                session.addOutput(photoOutput)
+            }
+            
+            // Start running before updating UI
+            session.startRunning()
+            print("📷 Camera session started running")
+            
+            // Update UI on main thread
+            DispatchQueue.main.async {
+                self.captureSession = session
+                self.currentCameraInput = videoInput
+                self.photoOutput = photoOutput
+                self.isUsingFrontCamera = false
+                self.isCameraReady = true
+                print("📷 Camera ready - UI updated")
+            }
+        }
+    }
+    
+    func setupCamera(in view: UIView) {
+        // Don't setup camera while capturing photo AND we already have a preview layer
+        if isCapturingPhoto && hasSetupPreview {
+            print("📷 Skipping camera setup - photo capture in progress")
+            return
+        }
+        
+        // Don't setup again if we already have a preview layer in this view
+        if hasSetupPreview && videoPreviewLayer?.superlayer != nil {
+            print("📷 Camera already set up, just updating frame")
+            updatePreviewFrame(to: view.bounds)
+            return
+        }
+        
+        // Remove any existing preview layer
+        videoPreviewLayer?.removeFromSuperlayer()
+        
+        guard let captureSession = captureSession else { 
+            print("📷 Capture session not ready yet - will setup when ready")
+            return 
+        }
+        
+        print("📷 Setting up camera preview layer")
+        videoPreviewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
+        videoPreviewLayer?.videoGravity = .resizeAspectFill
+        videoPreviewLayer?.frame = view.bounds
+        
+        if let videoPreviewLayer = videoPreviewLayer {
+            view.layer.addSublayer(videoPreviewLayer)
+            hasSetupPreview = true
+            print("📷 Camera preview layer added to view with bounds: \(view.bounds)")
+        }
+    }
+    
+    func updatePreviewFrame(to bounds: CGRect) {
+        videoPreviewLayer?.frame = bounds
+    }
+    
+    func flipCamera() {
+        guard let captureSession = captureSession,
+              let currentInput = currentCameraInput else {
+            print("📷 Cannot flip camera - session not ready")
+            return
+        }
+        
+        // Determine the new camera position
+        let newPosition: AVCaptureDevice.Position = isUsingFrontCamera ? .back : .front
+        
+        // Find the new camera device
+        guard let newCamera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: newPosition),
+              let newInput = try? AVCaptureDeviceInput(device: newCamera) else {
+            print("📷 Failed to create new camera input for position: \(newPosition)")
+            return
+        }
+        
+        // Check if we can add the new input
+        guard captureSession.canAddInput(newInput) else {
+            print("📷 Cannot add new camera input")
+            return
+        }
+        
+        // Start configuration
+        captureSession.beginConfiguration()
+        
+        // Remove current input and add new input
+        captureSession.removeInput(currentInput)
+        captureSession.addInput(newInput)
+        
+        // Update tracking variables
+        currentCameraInput = newInput
+        isUsingFrontCamera = (newPosition == .front)
+        
+        // Commit configuration
+        captureSession.commitConfiguration()
+        
+        print("📷 Camera flipped to \(newPosition == .front ? "front" : "back") camera")
+    }
+    
+    func stopSession() {
+        print("📷 Stopping camera session...")
+        
+        DispatchQueue.global(qos: .userInteractive).async {
+            self.captureSession?.stopRunning()
+            
+            DispatchQueue.main.async {
+                self.isCameraReady = false
+                self.videoPreviewLayer?.removeFromSuperlayer()
+                self.videoPreviewLayer = nil
+                print("📷 Camera session stopped and cleaned up")
+            }
+        }
+    }
+    
+    func capturePhoto(completion: @escaping (UIImage?) -> Void) {
+        print("📷 CapturePhoto called")
+        
+        guard let photoOutput = photoOutput else {
+            print("📷 ERROR: PhotoOutput is nil!")
+            completion(nil)
+            return
+        }
+        
+        guard let captureSession = captureSession, captureSession.isRunning else {
+            print("📷 ERROR: Capture session is not running!")
+            completion(nil)
+            return
+        }
+        
+        print("📷 Starting photo capture...")
+        isCapturingPhoto = true
+        
+        // Store delegate to prevent deallocation during async photo capture
+        currentPhotoDelegate = PhotoCaptureDelegate { [weak self] image in
+            self?.isCapturingPhoto = false
+            completion(image)
+        }
+        let settings = AVCapturePhotoSettings()
+        photoOutput.capturePhoto(with: settings, delegate: currentPhotoDelegate!)
+        print("📷 Photo capture delegate stored and capture initiated")
+    }
+}
+
+// MARK: - Photo Capture Delegate
+class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate {
+    let completion: (UIImage?) -> Void
+    
+    init(completion: @escaping (UIImage?) -> Void) {
+        self.completion = completion
+    }
+    
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        print("📷 PhotoCaptureDelegate callback received!")
+        
+        if let error = error {
+            print("📷 Photo capture error: \(error)")
+            completion(nil)
+            return
+        }
+        
+        guard let imageData = photo.fileDataRepresentation(),
+              let image = UIImage(data: imageData) else {
+            print("📷 Failed to convert photo to UIImage")
+            completion(nil)
+            return
+        }
+        
+        print("📷 Photo successfully captured and converted to UIImage")
+        completion(image)
+    }
+}
+
+// MARK: - Recent Find Update Helper
+private func updateRecentFindFromAnalysis(recentFindsManager: RecentFindsManager, songId: UUID, newTitle: String) {
+    // Find the recent find that corresponds to this song and update it
+    if let findIndex = recentFindsManager.recentFinds.firstIndex(where: { find in
+        // Match by approximate time (within 10 minutes) and if the current name is generic
+        let timeDifference = abs(find.dateFound.timeIntervalSince(Date()))
+        return timeDifference < 600 && (find.name == "New Thrift Find" || find.name == "Analyzing...")
+    }) {
+        // Create updated find with new information
+        let oldFind = recentFindsManager.recentFinds[findIndex]
+        let category = categorizeItemHelper(name: newTitle)
+        let estimatedValue = generateEstimatedValueHelper(for: newTitle, category: category)
+        let brand = extractBrandHelper(from: newTitle)
+        
+        let updatedFind = RecentFind(
+            id: oldFind.id,
+            name: newTitle,
+            category: category,
+            estimatedValue: estimatedValue,
+            condition: oldFind.condition,
+            brand: brand,
+            location: oldFind.location,
+            dateFound: oldFind.dateFound,
+            notes: oldFind.notes,
+            imageData: oldFind.imageData
+        )
+        
+        // Replace the old find with updated one
+        recentFindsManager.recentFinds[findIndex] = updatedFind
+        recentFindsManager.saveFinds()
+        
+        print("🔄 Updated recent find: \(oldFind.name) → \(newTitle)")
+    }
+}
+
+private func categorizeItemHelper(name: String) -> String {
+    let lowercaseName = name.lowercased()
+    
+    if lowercaseName.contains("jordan") || lowercaseName.contains("nike") || lowercaseName.contains("sneaker") || lowercaseName.contains("shoe") {
+        return "Sneakers"
+    } else if lowercaseName.contains("bag") || lowercaseName.contains("purse") || lowercaseName.contains("handbag") || lowercaseName.contains("coach") {
+        return "Accessories"
+    } else if lowercaseName.contains("hoodie") || lowercaseName.contains("shirt") || lowercaseName.contains("jacket") || lowercaseName.contains("clothing") || lowercaseName.contains("dress") {
+        return "Clothing"
+    } else if lowercaseName.contains("lamp") || lowercaseName.contains("vase") || lowercaseName.contains("decor") {
+        return "Home Decor"
+    } else {
+        return "Clothing" // Default category
+    }
+}
+
+private func generateEstimatedValueHelper(for name: String, category: String) -> Double {
+    let lowercaseName = name.lowercased()
+    
+    // High-value items
+    if lowercaseName.contains("jordan") || lowercaseName.contains("nike") {
+        return Double.random(in: 80...250)
+    } else if lowercaseName.contains("coach") || lowercaseName.contains("designer") {
+        return Double.random(in: 50...200)
+    } else if lowercaseName.contains("vintage") {
+        return Double.random(in: 25...100)
+    } else {
+        // Category-based defaults
+        switch category {
+        case "Sneakers":
+            return Double.random(in: 30...120)
+        case "Accessories":
+            return Double.random(in: 20...80)
+        case "Clothing":
+            return Double.random(in: 15...60)
+        case "Home Decor":
+            return Double.random(in: 10...50)
+        default:
+            return Double.random(in: 10...40)
+        }
+    }
+}
+
+private func extractBrandHelper(from name: String) -> String? {
+    let lowercaseName = name.lowercased()
+    
+    if lowercaseName.contains("nike") {
+        return "Nike"
+    } else if lowercaseName.contains("jordan") {
+        return "Nike"
+    } else if lowercaseName.contains("coach") {
+        return "Coach"
+    } else if lowercaseName.contains("ecko") {
+        return "Ecko Unltd"
+    } else if lowercaseName.contains("levi") {
+        return "Levi's"
+    } else {
+        return nil
+    }
+}
+
+
+
+// MARK: - Recent Finds Selection View
+struct RecentFindsSelectionView: View {
+    @ObservedObject var recentFindsManager: RecentFindsManager
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 0) {
+                // Header
+                VStack(spacing: 8) {
+                    Text("Select Recent Find")
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundColor(.black)
+                    
+                    Text("Choose from your recent thrift finds")
+                        .font(.system(size: 16))
+                        .foregroundColor(.gray)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.top, 20)
+                .padding(.horizontal, 24)
+                
+                if recentFindsManager.recentFinds.isEmpty {
+                    // Empty state
+                    VStack(spacing: 20) {
+                        Spacer()
+                        
+                        Image(systemName: "camera.viewfinder")
+                            .font(.system(size: 60))
+                            .foregroundColor(.gray.opacity(0.5))
+                        
+                        VStack(spacing: 8) {
+                            Text("No recent finds yet")
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundColor(.black)
+                            
+                            Text("Your thrift store finds will appear here automatically")
+                                .font(.system(size: 16))
+                                .foregroundColor(.gray)
+                                .multilineTextAlignment(.center)
+                        }
+                        
+                        Button(action: {
+                            dismiss()
+                        }) {
+                            HStack {
+                                Image(systemName: "camera.fill")
+                                Text("Open Camera")
+                            }
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 12)
+                            .background(Color.blue)
+                            .cornerRadius(25)
+                        }
+                        
+                        Spacer()
+                    }
+                    .padding(.horizontal, 24)
+                } else {
+                    // Items list
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(recentFindsManager.recentFinds) { find in
+                                RecentFindRow(
+                                    find: find,
+                                    onSelect: {
+                                        // Recent find selected - no action needed
+                                    }
+                                )
+                            }
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.top, 20)
+                        .padding(.bottom, 40)
+                    }
+                }
+                
+                // Manual entry option
+                VStack {
+                    Divider()
+                        .padding(.horizontal, 24)
+                    
+                    Button(action: {
+                        // No action needed - profit tracker removed
+                    }) {
+                        HStack(spacing: 12) {
+                            Image(systemName: "plus.circle")
+                                .font(.system(size: 20))
+                                .foregroundColor(.blue)
+                            
+                            Text("Add item manually")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundColor(.blue)
+                            
+                            Spacer()
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 16)
+                    }
+                }
+                .background(Color(.systemGray6))
+            }
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                    .foregroundColor(.black)
+                }
+            }
+        }
+    }
+}
+
+
+// MARK: - Recent Find Row
+struct RecentFindRow: View {
+    let find: RecentFind
+    let onSelect: () -> Void
+    
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 16) {
+                // Category icon
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color(.systemGray5))
+                    .frame(width: 80, height: 80)
+                    .overlay(
+                        Image(systemName: categoryIcon)
+                            .font(.system(size: 28))
+                            .foregroundColor(.gray)
+                    )
+                
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(find.name)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(.black)
+                        .multilineTextAlignment(.leading)
+                    
+                    HStack(spacing: 8) {
+                        if let brand = find.brand {
+                            Text(brand)
+                                .font(.system(size: 12, weight: .medium))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color(.systemGray6))
+                                .cornerRadius(6)
+                        }
+                        
+                        Text(find.condition)
+                            .font(.system(size: 12, weight: .medium))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.green.opacity(0.1))
+                            .foregroundColor(.green)
+                            .cornerRadius(6)
+                    }
+                    
+                    Text("Est. Value: $\(String(format: "%.2f", find.estimatedValue))")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.green)
+                    
+                    Text("Found at \(find.location)")
+                        .font(.system(size: 12))
+                        .foregroundColor(.gray)
+                }
+                
+                Spacer()
+                
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.gray)
+            }
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.white)
+                    .shadow(color: Color.black.opacity(0.05), radius: 4, x: 0, y: 2)
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+    
+    private var categoryIcon: String {
+        switch find.category.lowercased() {
+        case "sneakers":
+            return "shoe.2"
+        case "clothing":
+            return "tshirt"
+        case "accessories":
+            return "handbag"
+        case "home decor":
+            return "house"
+        default:
+            return "tag"
+        }
+    }
+}
+
+// MARK: - Recent Find Inline Row (for Profit Tracker page)
+struct RecentFindInlineRow: View {
+    let find: RecentFind
+    let onSelect: () -> Void
+    
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 16) {
+                // Item image from assets
+                Image(imageNameForFind(find))
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 80, height: 80)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(find.name)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(.black)
+                        .multilineTextAlignment(.leading)
+                    
+                    HStack(spacing: 8) {
+                        if let brand = find.brand {
+                            Text(brand)
+                                .font(.system(size: 12, weight: .medium))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color(.systemGray6))
+                                .cornerRadius(6)
+                        }
+                        
+                        Text(find.condition)
+                            .font(.system(size: 12, weight: .medium))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.green.opacity(0.1))
+                            .foregroundColor(.green)
+                            .cornerRadius(6)
+                    }
+                    
+                    Text("Est. Value: $\(String(format: "%.2f", find.estimatedValue))")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.green)
+                    
+                    Text("Found at \(find.location)")
+                        .font(.system(size: 12))
+                        .foregroundColor(.gray)
+                }
+                
+                Spacer()
+                
+                VStack(spacing: 4) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(.green)
+                    
+                    Text("Track")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.green)
+                }
+            }
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.white)
+                    .shadow(color: Color.black.opacity(0.05), radius: 4, x: 0, y: 2)
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+    
+    private func imageNameForFind(_ find: RecentFind) -> String {
+        // Map specific items to their actual images
+        switch find.name {
+        case "Nike Air Jordan 1's - T-Scott":
+            return "pokemon" // Best sneaker representation available
+        case "Vintage Ecko Navy Blue Hoodie":
+            return "ecko" // Perfect match - actual Ecko image
+        case "Coach Legacy Shoulder Bag":
+            return "coach" // Perfect match - actual Coach image
+        case "Jordan 4 White Cement":
+            return "pokemon" // Sneaker representation
+        case "Vintage Levi's Denim Jacket":
+            return "goodwill-bins" // General thrift find image
+        case let name where name.lowercased().contains("jordan") || name.lowercased().contains("nike") || name.lowercased().contains("sneaker"):
+            return "pokemon"
+        case let name where name.lowercased().contains("ecko"):
+            return "ecko"
+        case let name where name.lowercased().contains("coach") || name.lowercased().contains("bag") || name.lowercased().contains("purse"):
+            return "coach"
+        case let name where name.lowercased().contains("levi") || name.lowercased().contains("denim") || name.lowercased().contains("jacket"):
+            return "goodwill-bins"
+        case let name where name.lowercased().contains("hoodie") || name.lowercased().contains("shirt") || name.lowercased().contains("clothing"):
+            return "ecko" // Use ecko for general clothing
+        default:
+            return "toy-lot" // Default fallback for miscellaneous items
+        }
+    }
+}
+
+// MARK: - Recent Finds Page View  
+struct RecentFindsPageView: View {
+    @ObservedObject var songManager: SongManager
+    @ObservedObject var audioManager: AudioManager
+    @ObservedObject var profileManager: ProfileManager
+    @State private var previousTotalProfits: Double = 0.0
+    @State private var showConfetti: Bool = false
+    @State private var showFirstTimeNotification: Bool = false
+    @State private var showWelcomeConfetti: Bool = false
+    
+    var totalProfits: Double {
+        return profileManager.calculateTotalProfit(from: songManager)
+    }
+    
+    var body: some View {
+        NavigationView {
+            ZStack {
+                VStack(spacing: 0) {
+                    VStack(spacing: 0) {
+                        HStack {
+                            Text("Profit Calculator")
+                                .font(.system(size: 26, weight: .bold))
+                                .foregroundColor(.primary)
+                            
+                            Spacer()
+                            
+                            HStack(spacing: 6) {
+                                Text("$\(totalProfits, specifier: "%.2f")")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundColor(.white)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(RoundedRectangle(cornerRadius: 16).fill(Color.green.opacity(0.8)))
+                            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.green.opacity(0.6), lineWidth: 0.5))
+                            .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.top, 20)
+                        .padding(.bottom, 16)
+                    }
+                    .background(Color.white)
+                    
+                    if songManager.songs.isEmpty {
+                        VStack(spacing: 16) {
+                            Spacer()
+                            Image(systemName: "dollarsign.circle")
+                                .font(.system(size: 64))
+                                .foregroundColor(.gray.opacity(0.5))
+                            Text("No Items Yet")
+                                .font(.system(size: 24, weight: .semibold))
+                                .foregroundColor(.black)
+                            Text("Start scanning items to calculate your potential profit")
+                                .font(.system(size: 16))
+                                .foregroundColor(.gray)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 40)
+                            Spacer()
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.white)
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 12) {
+                                ForEach(songManager.songs) { song in
+                                    VerticalAlbumCard(
+                                        songManager: songManager, 
+                                        song: song, 
+                                        audioManager: audioManager,
+                                        profileManager: profileManager
+                                    )
+                                    .frame(maxWidth: 350)
+                                }
+                            }
+                            .padding(.horizontal, 32)
+                            .padding(.top, 48)
+                            .padding(.bottom, 120)
+                        }
+                        .background(Color.white)
+                    }
+                }
+                
+                if showConfetti {
+                    ConfettiView()
+                        .allowsHitTesting(false)
+                }
+                
+                // First-time notification overlay
+                if showFirstTimeNotification {
+                    Color.black.opacity(0.3)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            withAnimation(.easeOut(duration: 0.3)) {
+                                showFirstTimeNotification = false
+                                showWelcomeConfetti = false
+                            }
+                        }
+                    
+                    // Welcome confetti overlay
+                    if showWelcomeConfetti {
+                        ConfettiView()
+                            .allowsHitTesting(false)
+                    }
+                    
+                    VStack(spacing: 20) {
+                        Spacer()
+                        
+                        VStack(spacing: 16) {
+                            Image(systemName: "info.circle.fill")
+                                .font(.system(size: 32))
+                                .foregroundColor(.blue)
+                            
+                            Text("Welcome to Profit Calculator!")
+                                .font(.system(size: 20, weight: .bold))
+                                .foregroundColor(.black)
+                                .multilineTextAlignment(.center)
+                            
+                            Text("This is where your recently scanned items will appear. Manually adjust the purchase amount and potential selling amount to keep track of your profits!")
+                                .font(.system(size: 16))
+                                .foregroundColor(.gray)
+                                .multilineTextAlignment(.center)
+                                .lineLimit(nil)
+                                .fixedSize(horizontal: false, vertical: true)
+                            
+                            Button("Got it!") {
+                                withAnimation(.easeOut(duration: 0.3)) {
+                                    showFirstTimeNotification = false
+                                    showWelcomeConfetti = false
+                                }
+                                // Mark as seen so it won't show again
+                                UserDefaults.standard.set(true, forKey: "hasSeenProfitCalculatorIntro")
+                            }
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 50)
+                            .background(Color.blue)
+                            .cornerRadius(25)
+                        }
+                        .padding(24)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(Color.white)
+                                .shadow(color: .black.opacity(0.1), radius: 10, x: 0, y: 5)
+                        )
+                        .padding(.horizontal, 32)
+                        
+                        Spacer()
+                    }
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                }
+            }
+            .background(Color.white)
+            .navigationBarHidden(true)
+            .onChange(of: totalProfits) { newValue in
+                // Only trigger confetti if profit actually increased and both values are positive
+                if newValue > previousTotalProfits && previousTotalProfits > 0 && newValue > 0 {
+                    showConfetti = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        showConfetti = false
+                    }
+                }
+                previousTotalProfits = newValue
+            }
+            .onAppear {
+                previousTotalProfits = totalProfits
+                
+                // Check if this is the first time visiting profit calculator
+                let hasSeenIntro = UserDefaults.standard.bool(forKey: "hasSeenProfitCalculatorIntro")
+                if !hasSeenIntro {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        withAnimation(.easeOut(duration: 0.3)) {
+                            showFirstTimeNotification = true
+                        }
+                        // Start confetti shortly after notification appears
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                            showWelcomeConfetti = true
+                            // Stop confetti after 4 seconds
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+                                showWelcomeConfetti = false
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+    }
+}
+
+// MARK: - Vertical Album Card
+struct VerticalAlbumCard: View {
+    @ObservedObject var songManager: SongManager
+    let song: Song
+    @ObservedObject var audioManager: AudioManager
+    @ObservedObject var profileManager: ProfileManager
+    @State private var averagePrice: String = "0"
+    @State private var sellPrice: String = "0"
+    @State private var profitOverride: String = ""
+    @State private var isEditingAveragePrice = false
+    @State private var isEditingSellPrice = false
+    @State private var isEditingProfit = false
+    @State private var useCustomProfit = false
+    @State private var showingDeleteAlert = false
+    
+    var calculatedProfit: Double {
+        if useCustomProfit && !profitOverride.isEmpty {
+            return Double(profitOverride) ?? 0
+        }
+        let avg = Double(averagePrice) ?? 0
+        let sell = Double(sellPrice) ?? 0
+        return sell - avg
+    }
+    
+    var imageWithOverlays: some View {
+        ZStack {
+            imageView
+            
+            // Title overlay (top-left)
+            VStack {
+                HStack {
+                    titleOverlay
+                    Spacer()
+                }
+                Spacer()
+            }
+            .padding(16)
+        }
+        .onTapGesture {
+            // Format and dismiss any active text editing when tapping on image
+            if isEditingAveragePrice {
+                averagePrice = formatPriceValue(averagePrice)
+                isEditingAveragePrice = false
+            }
+            if isEditingSellPrice {
+                sellPrice = formatPriceValue(sellPrice)
+                isEditingSellPrice = false
+            }
+            if isEditingProfit {
+                profitOverride = formatProfitValue(profitOverride)
+                isEditingProfit = false
+                useCustomProfit = !profitOverride.isEmpty
+            }
+        }
+    }
+    
+    var imageWithTitleOverlay: some View {
+        ZStack(alignment: .topLeading) {
+            imageView
+            titleOverlay
+        }
+    }
+    
+    var imageView: some View {
+        Group {
+            if let customImage = song.customImage {
+                Image(uiImage: customImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(height: 240)
+                    .clipped()
+                    .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
+            } else if let firstAdditionalImage = song.additionalImages?.first {
+                Image(uiImage: firstAdditionalImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(height: 240)
+                    .clipped()
+                    .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
+            } else if !song.imageName.isEmpty {
+                Image(song.imageName)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(height: 240)
+                    .clipped()
+                    .clipShape(
+                        RoundedCorner(radius: 16, corners: [.topLeft, .topRight, .bottomLeft, .bottomRight])
+                    )
+            } else {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.gray.opacity(0.3))
+                    .frame(height: 240)
+                    .overlay(
+                        Image(systemName: "photo")
+                            .font(.system(size: 40))
+                            .foregroundColor(.gray)
+                    )
+            }
+        }
+            }
+            
+    var titleOverlay: some View {
+                Text(song.title.isEmpty ? "Untitled Find" : song.title)
+            .font(.system(size: 18, weight: .bold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.black.opacity(0.4))
+            )
+                    .lineLimit(2)
+            .shadow(color: .black.opacity(0.4), radius: 3, x: 0, y: 2)
+    }
+    
+    var titleOverlayBackground: some View {
+        LinearGradient(
+            gradient: Gradient(colors: [Color.black.opacity(0.7), Color.clear]),
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+    
+    var deleteButtonOverlay: some View {
+        Button(action: {
+            songManager.removeSong(song)
+        }) {
+            Image(systemName: "xmark")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(.white)
+                .padding(8)
+                .background(
+                    Circle()
+                        .fill(Color.red.opacity(0.8))
+                        .blur(radius: 0.5)
+                )
+        }
+    }
+    
+    var deleteButton: some View {
+        HStack {
+            Spacer()
+            Button(action: {
+                songManager.removeSong(song)
+            }) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(.gray.opacity(0.8))
+                    .padding(10)
+                    .background(
+                        Circle()
+                            .fill(Color.white)
+                            .shadow(color: .black.opacity(0.15), radius: 4, x: 0, y: 2)
+                    )
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 8)
+        .zIndex(1)
+    }
+    
+    var contentSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            pricingSection
+        }
+        .padding(.horizontal, 18)
+        .padding(.bottom, 14)
+    }
+    
+    var pricingSection: some View {
+                VStack(spacing: 12) {
+            combinedPriceRow
+            
+            Divider()
+                .background(Color.gray.opacity(0.2))
+                .padding(.vertical, 1)
+            
+            profitRow
+        }
+        .padding(.vertical, 4)
+    }
+    
+    var combinedPriceRow: some View {
+        HStack(spacing: 16) {
+            purchasePriceField
+            Spacer()
+            sellingPriceField
+        }
+    }
+    
+    private var purchasePriceField: some View {
+        HStack(spacing: 8) {
+            Text("Purchase:")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.primary)
+            
+            if isEditingAveragePrice {
+                purchasePriceTextField
+            } else {
+                purchasePriceButton
+            }
+        }
+    }
+    
+    private var purchasePriceTextField: some View {
+        TextField("$0", text: $averagePrice)
+            .keyboardType(.decimalPad)
+            .font(.system(size: 14, weight: .semibold))
+            .multilineTextAlignment(.center)
+            .frame(width: 60, height: 28)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.05)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.blue.opacity(0.4), lineWidth: 2))
+            .onSubmit {
+                averagePrice = formatPriceValue(averagePrice)
+                isEditingAveragePrice = false
+            }
+            .onChange(of: averagePrice) { newValue in
+                let filtered = newValue.filter { "0123456789.".contains($0) }
+                if filtered != newValue {
+                    averagePrice = filtered
+                }
+                let components = filtered.components(separatedBy: ".")
+                if components.count > 2 {
+                    averagePrice = components[0] + "." + components[1]
+                }
+            }
+    }
+    
+    private var purchasePriceButton: some View {
+        Button(action: {
+            if isEditingSellPrice {
+                sellPrice = formatPriceValue(sellPrice)
+                isEditingSellPrice = false
+            }
+            if isEditingProfit {
+                profitOverride = formatProfitValue(profitOverride)
+                isEditingProfit = false
+                useCustomProfit = !profitOverride.isEmpty
+            }
+            isEditingAveragePrice = true
+        }) {
+            Text("$\(averagePrice)")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.primary)
+                .frame(width: 60, height: 28)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.05)))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2), lineWidth: 1))
+        }
+    }
+    
+    private var sellingPriceField: some View {
+        HStack(spacing: 8) {
+            Text("Selling:")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.primary)
+            
+            if isEditingSellPrice {
+                sellingPriceTextField
+            } else {
+                sellingPriceButton
+            }
+        }
+    }
+    
+    private var sellingPriceTextField: some View {
+        TextField("$0", text: $sellPrice)
+            .keyboardType(.decimalPad)
+            .font(.system(size: 14, weight: .semibold))
+            .multilineTextAlignment(.center)
+            .frame(width: 60, height: 28)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.05)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.blue.opacity(0.4), lineWidth: 2))
+            .onSubmit {
+                sellPrice = formatPriceValue(sellPrice)
+                isEditingSellPrice = false
+            }
+            .onChange(of: sellPrice) { newValue in
+                let filtered = newValue.filter { "0123456789.".contains($0) }
+                if filtered != newValue {
+                    sellPrice = filtered
+                }
+                let components = filtered.components(separatedBy: ".")
+                if components.count > 2 {
+                    sellPrice = components[0] + "." + components[1]
+                }
+            }
+    }
+    
+    private var sellingPriceButton: some View {
+        Button(action: {
+            if isEditingAveragePrice {
+                averagePrice = formatPriceValue(averagePrice)
+                isEditingAveragePrice = false
+            }
+            if isEditingProfit {
+                profitOverride = formatProfitValue(profitOverride)
+                isEditingProfit = false
+                useCustomProfit = !profitOverride.isEmpty
+            }
+            isEditingSellPrice = true
+        }) {
+            Text("$\(sellPrice)")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.primary)
+                .frame(width: 60, height: 28)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.gray.opacity(0.05)))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gray.opacity(0.2), lineWidth: 1))
+        }
+    }
+    
+    var purchasedForRow: some View {
+                    HStack {
+            Text("Purchase Price:")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(.primary)
+                        
+                        Spacer()
+                        
+                        HStack(spacing: 4) {
+                            Text("$")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(.black)
+                            
+                            if isEditingAveragePrice {
+                                TextField("0", text: $averagePrice)
+                                    .keyboardType(.decimalPad)
+                        .font(.system(size: 15, weight: .semibold))
+                        .multilineTextAlignment(.center)
+                        .frame(width: 80, height: 36)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(Color.blue.opacity(0.05))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(Color.blue.opacity(0.4), lineWidth: 2)
+                        )
+                                    .onSubmit {
+                                        averagePrice = formatPriceValue(averagePrice)
+                                        isEditingAveragePrice = false
+                                    }
+                                    .onChange(of: averagePrice) { newValue in
+                                        // Filter to only allow numbers and decimal point
+                                        let filtered = newValue.filter { "0123456789.".contains($0) }
+                                        if filtered != newValue {
+                                            averagePrice = filtered
+                                        }
+                                        // Ensure only one decimal point
+                                        let components = filtered.components(separatedBy: ".")
+                                        if components.count > 2 {
+                                            averagePrice = components[0] + "." + components[1]
+                                        }
+                                    }
+                            } else {
+                                Button(action: {
+                                    // Format and dismiss other fields first
+                                    if isEditingSellPrice {
+                                        sellPrice = formatPriceValue(sellPrice)
+                                        isEditingSellPrice = false
+                                    }
+                                    if isEditingProfit {
+                                        profitOverride = formatProfitValue(profitOverride)
+                                        isEditingProfit = false
+                                        useCustomProfit = !profitOverride.isEmpty
+                                    }
+                                    isEditingAveragePrice = true
+                                }) {
+                                    Text(averagePrice)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(.primary)
+                            .frame(width: 80, height: 32)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(Color.gray.opacity(0.05))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                            )
+                    }
+                }
+            }
+        }
+    }
+    
+    var sellingForRow: some View {
+                    HStack {
+            Text("Selling Price:")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(.primary)
+                        
+                        Spacer()
+                        
+                        HStack(spacing: 4) {
+                            Text("$")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(.black)
+                            
+                            if isEditingSellPrice {
+                                TextField("0", text: $sellPrice)
+                                    .keyboardType(.decimalPad)
+                        .font(.system(size: 15, weight: .semibold))
+                        .multilineTextAlignment(.center)
+                        .frame(width: 80, height: 36)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(Color.blue.opacity(0.05))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(Color.blue.opacity(0.4), lineWidth: 2)
+                        )
+                                    .onSubmit {
+                                        sellPrice = formatPriceValue(sellPrice)
+                                        isEditingSellPrice = false
+                                    }
+                                    .onChange(of: sellPrice) { newValue in
+                                        // Filter to only allow numbers and decimal point
+                                        let filtered = newValue.filter { "0123456789.".contains($0) }
+                                        if filtered != newValue {
+                                            sellPrice = filtered
+                                        }
+                                        // Ensure only one decimal point
+                                        let components = filtered.components(separatedBy: ".")
+                                        if components.count > 2 {
+                                            sellPrice = components[0] + "." + components[1]
+                                        }
+                                    }
+                            } else {
+                                Button(action: {
+                                    // Format and dismiss other fields first
+                                    if isEditingAveragePrice {
+                                        averagePrice = formatPriceValue(averagePrice)
+                                        isEditingAveragePrice = false
+                                    }
+                                    if isEditingProfit {
+                                        profitOverride = formatProfitValue(profitOverride)
+                                        isEditingProfit = false
+                                        useCustomProfit = !profitOverride.isEmpty
+                                    }
+                                    isEditingSellPrice = true
+                                }) {
+                                    Text(sellPrice)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(.primary)
+                            .frame(width: 80, height: 32)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(Color.gray.opacity(0.05))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                            )
+                    }
+                }
+            }
+        }
+    }
+    
+    var profitRow: some View {
+                    HStack {
+                        Text("Profit:")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundColor(.primary)
+                        
+                        Spacer()
+                        
+            if isEditingProfit {
+                TextField("$0.00", text: $profitOverride)
+                    .keyboardType(.decimalPad)
+                            .font(.system(size: 16, weight: .bold))
+                    .multilineTextAlignment(.center)
+                    .frame(width: 90, height: 32)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color.blue.opacity(0.05))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.blue.opacity(0.4), lineWidth: 2)
+                    )
+                    .onSubmit {
+                        profitOverride = formatProfitValue(profitOverride)
+                        isEditingProfit = false
+                        useCustomProfit = !profitOverride.isEmpty
+                    }
+                    .onChange(of: profitOverride) { newValue in
+                        // Filter to only allow numbers, decimal point, and minus sign
+                        let filtered = newValue.filter { "0123456789.-".contains($0) }
+                        if filtered != newValue {
+                            profitOverride = filtered
+                        }
+                        // Ensure only one decimal point and minus sign only at the beginning
+                        var result = filtered
+                        let components = result.components(separatedBy: ".")
+                        if components.count > 2 {
+                            result = components[0] + "." + components[1]
+                        }
+                        // Handle minus sign - only allow at the beginning
+                        if result.contains("-") {
+                            let minusCount = result.filter { $0 == "-" }.count
+                            if minusCount > 1 || (result.contains("-") && !result.hasPrefix("-")) {
+                                result = result.replacingOccurrences(of: "-", with: "")
+                                if newValue.hasPrefix("-") {
+                                    result = "-" + result
+                                }
+                            }
+                        }
+                        if result != filtered {
+                            profitOverride = result
+                        }
+                    }
+            } else {
+                Button(action: {
+                    // Format and dismiss other fields first
+                    if isEditingAveragePrice {
+                        averagePrice = formatPriceValue(averagePrice)
+                        isEditingAveragePrice = false
+                    }
+                    if isEditingSellPrice {
+                        sellPrice = formatPriceValue(sellPrice)
+                        isEditingSellPrice = false
+                    }
+                    
+                    if useCustomProfit {
+                        isEditingProfit = true
+                    } else {
+                        profitOverride = String(calculatedProfit)
+                        useCustomProfit = true
+                        isEditingProfit = true
+                    }
+                }) {
+                    Text("$\(String(format: "%.2f", calculatedProfit))")
+                        .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(calculatedProfit >= 0 ? .green : .red)
+                }
+            }
+        }
+    }
+    
+    
+    func loadSavedValues() {
+        let savedAvgPrice = UserDefaults.standard.double(forKey: "avgPrice_\(song.id)")
+        let savedSellPrice = UserDefaults.standard.double(forKey: "sellPrice_\(song.id)")
+        let savedProfitOverride = UserDefaults.standard.string(forKey: "profitOverride_\(song.id)") ?? ""
+        let savedUseCustomProfit = UserDefaults.standard.bool(forKey: "useCustomProfit_\(song.id)")
+        
+        if savedAvgPrice > 0 {
+            averagePrice = String(savedAvgPrice)
+        }
+        if savedSellPrice > 0 {
+            sellPrice = String(savedSellPrice)
+        }
+        profitOverride = savedProfitOverride
+        useCustomProfit = savedUseCustomProfit
+    }
+    
+    private func saveAveragePrice(_ value: String) {
+        UserDefaults.standard.set(Double(value) ?? 0, forKey: "avgPrice_\(song.id)")
+        // Reset custom profit when purchase price changes so it recalculates
+        if useCustomProfit {
+            useCustomProfit = false
+            profitOverride = ""
+            UserDefaults.standard.removeObject(forKey: "profitOverride_\(song.id)")
+            UserDefaults.standard.set(false, forKey: "useCustomProfit_\(song.id)")
+        }
+        // Trigger profile refresh for real-time updates
+        profileManager.triggerProfitRefresh()
+    }
+    
+    private func saveSellPrice(_ value: String) {
+        UserDefaults.standard.set(Double(value) ?? 0, forKey: "sellPrice_\(song.id)")
+        // Reset custom profit when selling price changes so it recalculates
+        if useCustomProfit {
+            useCustomProfit = false
+            profitOverride = ""
+            UserDefaults.standard.removeObject(forKey: "profitOverride_\(song.id)")
+            UserDefaults.standard.set(false, forKey: "useCustomProfit_\(song.id)")
+        }
+        // Trigger profile refresh for real-time updates
+        profileManager.triggerProfitRefresh()
+    }
+    
+    private func saveProfitOverride(_ value: String) {
+        UserDefaults.standard.set(value, forKey: "profitOverride_\(song.id)")
+        // Trigger profile refresh for real-time updates
+        profileManager.triggerProfitRefresh()
+    }
+    
+    private func saveUseCustomProfit(_ value: Bool) {
+        UserDefaults.standard.set(value, forKey: "useCustomProfit_\(song.id)")
+    }
+    
+    private func formatPriceValue(_ value: String) -> String {
+        // Auto-format to show .0 if it's a whole number and doesn't already have decimal
+        if !value.isEmpty && !value.contains(".") {
+            if let doubleValue = Double(value), doubleValue == floor(doubleValue) {
+                return String(format: "%.1f", doubleValue)
+            }
+        }
+        return value
+    }
+    
+    private func formatProfitValue(_ value: String) -> String {
+        // Auto-format to show .0 if it's a whole number and doesn't already have decimal
+        if !value.isEmpty && !value.contains(".") {
+            if value.hasPrefix("-") {
+                let cleanValue = value.replacingOccurrences(of: "-", with: "")
+                if let doubleValue = Double(cleanValue), doubleValue == floor(doubleValue) {
+                    return String(format: "-%.1f", doubleValue)
+                }
+            } else {
+                if let doubleValue = Double(value), doubleValue == floor(doubleValue) {
+                    return String(format: "%.1f", doubleValue)
+                }
+            }
+        }
+        return value
+    }
+    
+    private func deleteProfitData() {
+        // Clear all profit tracking data
+        averagePrice = "0"
+        sellPrice = "0"
+        profitOverride = ""
+        useCustomProfit = false
+        
+        // Remove from UserDefaults
+        UserDefaults.standard.removeObject(forKey: "avgPrice_\(song.id)")
+        UserDefaults.standard.removeObject(forKey: "sellPrice_\(song.id)")
+        UserDefaults.standard.removeObject(forKey: "profitOverride_\(song.id)")
+        UserDefaults.standard.removeObject(forKey: "useCustomProfit_\(song.id)")
+        
+        // Remove the item from the song manager
+        songManager.removeSong(song)
+        
+        // Trigger profile refresh for real-time updates
+        profileManager.triggerProfitRefresh()
+        
+        print("🗑️ Deleted profit tracking item: \(song.title)")
+    }
+    
+    var body: some View {
+        mainCard
+    }
+    
+    var mainCard: some View {
+        cardWithStyling
+            .onAppear(perform: loadSavedValues)
+            .onChange(of: averagePrice, perform: saveAveragePrice)
+            .onChange(of: sellPrice, perform: saveSellPrice)
+            .onChange(of: profitOverride, perform: saveProfitOverride)
+            .onChange(of: useCustomProfit, perform: saveUseCustomProfit)
+            .alert("Delete Profit Tracking", isPresented: $showingDeleteAlert) {
+                Button("Cancel", role: .cancel) { }
+                Button("Delete", role: .destructive) {
+                    deleteProfitData()
+                }
+            } message: {
+                Text("Are you sure you want to delete the profit tracking data for this item? This action cannot be undone.")
+            }
+    }
+    
+    var cardWithStyling: some View {
+        ZStack {
+            cardLayout
+                .background(
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(Color.white)
+                        .shadow(color: .black.opacity(0.08), radius: 12, x: 0, y: 4)
+                        .shadow(color: .black.opacity(0.04), radius: 1, x: 0, y: 1)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+                .contentShape(RoundedRectangle(cornerRadius: 20))
+                .onTapGesture {
+                    // Format and dismiss any active text editing when tapping outside TextFields
+                    if isEditingAveragePrice {
+                        averagePrice = formatPriceValue(averagePrice)
+                        isEditingAveragePrice = false
+                    }
+                    if isEditingSellPrice {
+                        sellPrice = formatPriceValue(sellPrice)
+                        isEditingSellPrice = false
+                    }
+                    if isEditingProfit {
+                        profitOverride = formatProfitValue(profitOverride)
+                        isEditingProfit = false
+                        useCustomProfit = !profitOverride.isEmpty
+                    }
+                }
+            
+            // Delete button positioned over top right curve
+            VStack {
+                HStack {
+                    Spacer()
+                    Button(action: {
+                        showingDeleteAlert = true
+                    }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 24, height: 24)
+                            .background(
+                                Circle()
+                                    .fill(Color.red.opacity(0.9))
+                            )
+                            .shadow(color: .black.opacity(0.3), radius: 2, x: 0, y: 1)
+                    }
+                    .offset(x: 8, y: -8) // Position it over the curve
+                }
+                Spacer()
+            }
+        }
+    }
+    
+    var cardLayout: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            imageWithOverlays
+            contentSection
+                .padding(.top, 12)
+        }
+    }
+}
+
+// MARK: - End of ContentView
