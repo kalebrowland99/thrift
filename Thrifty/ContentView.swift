@@ -7993,8 +7993,9 @@ struct MainAppView: View {
             VStack(spacing: 0) {
                 HStack(spacing: 0) {
                 tabBarContent
-                    .padding(.horizontal, 30)
-                    .padding(.top, 16)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 10)
+                    .padding(.bottom, 10)
             }
             .background(tabBarBackground)
         }
@@ -8002,22 +8003,55 @@ struct MainAppView: View {
     
     // MARK: - Tab Bar Content
     private var tabBarContent: some View {
-                    HStack(spacing: 0) {
-                        // Home Tab
-                        Button(action: { selectedTab = 0 }) {
-                            Image(systemName: selectedTab == 0 ? "house.fill" : "house")
-                                .font(.system(size: 20, weight: .medium))
-                                .foregroundColor(.black)
-                        }
-                        .frame(maxWidth: .infinity)
-                        
-            // Plus Button
-            plusButton
-                        .frame(maxWidth: .infinity)
+        HStack {
+            Spacer()
+                .frame(width: 20) // Add some padding from left edge
             
-            // Profile Tab
-            profileTabButton
-                        .frame(maxWidth: .infinity)
+            // Home Tab
+            Button(action: { selectedTab = 0 }) {
+                VStack(spacing: 4) {
+                    Image(systemName: selectedTab == 0 ? "house.fill" : "house")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundColor(selectedTab == 0 ? .black : .gray)
+                    Text("Home")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(selectedTab == 0 ? .black : .gray)
+                }
+            }
+            
+            Spacer()
+            
+            // Analytics Tab
+            Button(action: { selectedTab = 1 }) {
+                VStack(spacing: 4) {
+                    Image(systemName: selectedTab == 1 ? "chart.bar.fill" : "chart.bar")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundColor(selectedTab == 1 ? .black : .gray)
+                    Text("Analytics")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(selectedTab == 1 ? .black : .gray)
+                }
+            }
+            
+            Spacer()
+            
+            // Settings Tab
+            Button(action: { selectedTab = 2 }) {
+                VStack(spacing: 4) {
+                    Image(systemName: selectedTab == 2 ? "gearshape.fill" : "gearshape")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundColor(selectedTab == 2 ? .black : .gray)
+                    Text("Settings")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(selectedTab == 2 ? .black : .gray)
+                }
+            }
+            
+            Spacer()
+            
+            // Plus button positioned on the right edge
+            plusButton
+                .offset(x: -10, y: -28) // Move left and up
         }
     }
     
@@ -8026,12 +8060,13 @@ struct MainAppView: View {
                         Button(action: {
                             showingCamera = true
                         }) {
-                            Image(systemName: "camera")
-                                .font(.system(size: 20, weight: .medium))
+                            Image(systemName: "plus")
+                                .font(.system(size: 24, weight: .bold))
                                 .foregroundColor(.white)
-                                .frame(width: 40, height: 40)
+                                .frame(width: 56, height: 56)
                                 .background(Color.black)
                                 .clipShape(Circle())
+                                .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
                         }
     }
     
