@@ -17,5 +17,13 @@
 	</array>
 	<key>GIDClientID</key>
 	<string>496120891333-5bf2f8b6hvfk1ofesi3f8p1qlcv8efbn.apps.googleusercontent.com</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Thrifty needs camera access to analyze thrift store items and help you find the best deals.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Thrifty uses your location to find nearby thrift stores and provide local shopping recommendations.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Thrifty needs photo library access to analyze your thrift store item photos.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Thrifty may use microphone access for audio features and voice interactions.</string>
 </dict>
 </plist>

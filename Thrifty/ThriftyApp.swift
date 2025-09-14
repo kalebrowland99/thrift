@@ -8,6 +8,7 @@
 import SwiftUI
 import FirebaseCore
 import GoogleSignIn
+import GoogleMaps
 
 @main
 struct ThriftyApp: App {
@@ -16,7 +17,8 @@ struct ThriftyApp: App {
     
     init() {
         configureFirebase()
-        configureGoogleSignIn()
+        configureGoogleServices()
+        configureAnalyticsServices()
     }
     
     var body: some Scene {
@@ -61,15 +63,33 @@ private extension ThriftyApp {
         }
     }
     
-    func configureGoogleSignIn() {
+    func configureGoogleServices() {
         guard let path = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist"),
               let plist = NSDictionary(contentsOfFile: path),
               let clientId = plist["CLIENT_ID"] as? String else {
-            print("⚠️ GoogleService-Info.plist not found or CLIENT_ID missing - Google Sign In will not work")
+            print("⚠️ GoogleService-Info.plist not found or CLIENT_ID missing - Google services will not work")
             return
         }
         
+        // Configure Google Sign In
         GoogleSignIn.GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: clientId)
         print("✅ Google Sign In configured successfully")
+        
+        // Configure Google Maps with existing API key
+        GMSServices.provideAPIKey(APIKeys.googleMaps)
+        print("🗺️ Google Maps configured successfully")
+    }
+    
+    func configureAnalyticsServices() {
+        // Initialize Mixpanel service first (this ensures it's ready before other services use it)
+        _ = MixpanelService.shared
+        print("📊 Analytics services configured successfully")
+        
+        // Initialize tracking services after Mixpanel is ready
+        _ = ConsumptionRequestService.shared
+        _ = DelayedTrackingService.shared
+        _ = AppUsageTracker.shared  // Initialize the singleton
+        
+        print("📊 All analytics services initialized successfully")
     }
 }

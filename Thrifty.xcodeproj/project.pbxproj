@@ -10,7 +10,6 @@
 		1ABB18876684410BB4745E37B4F97AAD /* Run It Up.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = 1ABB18876684410BB4745E37B4F97AAC /* Run It Up.mp3 */; };
 		313EA2470939424FB17E3EF1CBCA079F /* Better Mornings.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = 313EA2470939424FB17E3EF1CBCA079E /* Better Mornings.mp3 */; };
 		5E3796BBEF284349845E6CB22F3AC65A /* Yacht Parties.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = 5E3796BBEF284349845E6CB22F3AC659 /* Yacht Parties.mp3 */; };
-		9B0A9C2C2E31D920006C762E /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = 9B0A9C2B2E31D920006C762E /* FirebaseFirestore */; };
 		9B0B8F1F2E2AC8C10028982B /* rhyme_database.sqlite in Resources */ = {isa = PBXBuildFile; fileRef = 9B0B8F1E2E2AC8C10028982B /* rhyme_database.sqlite */; };
 		9B31141A2E283071006BF7E6 /* ThriftyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B3114192E283071006BF7E6 /* ThriftyApp.swift */; };
 		9B31141C2E283071006BF7E6 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B31141B2E283071006BF7E6 /* ContentView.swift */; };
@@ -19,7 +18,6 @@
 		9B31142C2E283074006BF7E6 /* ThriftyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B31142B2E283074006BF7E6 /* ThriftyTests.swift */; };
 		9B3114362E283074006BF7E6 /* ThriftyUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B3114352E283074006BF7E6 /* ThriftyUITests.swift */; };
 		9B3114382E283074006BF7E6 /* ThriftyUITestsLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B3114372E283074006BF7E6 /* ThriftyUITestsLaunchTests.swift */; };
-		9B471DA02E303EFC00113BCC /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = 9B471D9F2E303EFC00113BCC /* FirebaseAuth */; };
 		9B471DA32E30400A00113BCC /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 9B471DA22E30400A00113BCC /* GoogleSignIn */; };
 		9B77E8DD2E2CBA9A0025E339 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B77E8D72E2CBA9A0025E339 /* Config.swift */; };
 		9B77E8DE2E2CBA9A0025E339 /* ToolPromptService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B77E8D82E2CBA9A0025E339 /* ToolPromptService.swift */; };
@@ -29,16 +27,26 @@
 		9B77E8E22E2CBA9A0025E339 /* ToolPrompts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B77E8DC2E2CBA9A0025E339 /* ToolPrompts.swift */; };
 		9B932B872E2968D800549AE9 /* StoreKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9B932B862E2968D800549AE9 /* StoreKit.framework */; };
 		9BCCD2512E30A72000545DD8 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 9BCCD2502E30A71F00545DD8 /* GoogleService-Info.plist */; };
-		9BCCD2532E31665E00545DD8 /* FirebaseFunctions in Frameworks */ = {isa = PBXBuildFile; productRef = 9BCCD2522E31665E00545DD8 /* FirebaseFunctions */; };
 		B442D08FCB4A4DFC92A6DD51009C7AE6 /* Pleasent Poetry.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = B442D08FCB4A4DFC92A6DD51009C7AE5 /* Pleasent Poetry.mp3 */; };
 		E964A22E3D7C4C25BE6D53920A85FD8A /* 10AM In The South.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = E964A22E3D7C4C25BE6D53920A85FD8B /* 10AM In The South.mp3 */; };
-		F896D0B42E752E4900196B76 /* GoogleMaps in Frameworks */ = {isa = PBXBuildFile; productRef = F896D0B32E752E4900196B76 /* GoogleMaps */; };
-		F896D0B62E75332300196B76 /* AppUsageTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F896D0B52E75332300196B76 /* AppUsageTracker.swift */; };
-		F896D0B82E75333800196B76 /* AudioManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F896D0B72E75333800196B76 /* AudioManager.swift */; };
-		F896D0BA2E75334800196B76 /* StreakManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F896D0B92E75334800196B76 /* StreakManager.swift */; };
+		F896D0BF2E75C06600196B76 /* GoogleMaps in Frameworks */ = {isa = PBXBuildFile; productRef = F896D0BE2E75C06600196B76 /* GoogleMaps */; };
+		F896D0C22E75C11B00196B76 /* ConfettiSwiftUI in Frameworks */ = {isa = PBXBuildFile; productRef = F896D0C12E75C11B00196B76 /* ConfettiSwiftUI */; };
+		F896D0C42E75C3B100196B76 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = F896D0C32E75C3B100196B76 /* FirebaseAuth */; };
+		F896D0C62E75C3B100196B76 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = F896D0C52E75C3B100196B76 /* FirebaseFirestore */; };
+		F896D0C82E75C3B100196B76 /* FirebaseFunctions in Frameworks */ = {isa = PBXBuildFile; productRef = F896D0C72E75C3B100196B76 /* FirebaseFunctions */; };
+		F896D0CA2E75C3B100196B76 /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = F896D0C92E75C3B100196B76 /* FirebaseStorage */; };
 		F8BCEA032E33512A00197AD1 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F8BCEA022E33512A00197AD1 /* UIKit.framework */; platformFilter = ios; };
-		F8C800182E395B41000B3ED0 /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = F8C800172E395B41000B3ED0 /* FirebaseStorage */; };
-		F8C800292E399538000B3ED0 /* FirebaseStorageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8C800282E399538000B3ED0 /* FirebaseStorageService.swift */; };
+		F8C800272E39885B000B3ED1 /* FirebaseStorageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8C800272E39885B000B3ED0 /* FirebaseStorageService.swift */; };
+		F8FE60EA2E75DBE800014042 /* Mixpanel in Frameworks */ = {isa = PBXBuildFile; productRef = F8FE60E92E75DBE800014042 /* Mixpanel */; };
+		F8FE60F32E75DD8100014042 /* MixpanelService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8FE60F22E75DD7C00014042 /* MixpanelService.swift */; };
+		F8FE60FB2E75E16600014042 /* AppUsageTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8FE60FA2E75E16600014042 /* AppUsageTracker.swift */; };
+		F8FE61062E75E28900014042 /* ConsumptionRequestService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8FE61052E75E28900014042 /* ConsumptionRequestService.swift */; };
+		F8FE61142E75E42000014042 /* Subscriptions.storekit in Resources */ = {isa = PBXBuildFile; fileRef = F8FE61132E75E42000014042 /* Subscriptions.storekit */; };
+		F8FE61152E75E42000014042 /* APIKeys.swift.template in Resources */ = {isa = PBXBuildFile; fileRef = F8FE610F2E75E42000014042 /* APIKeys.swift.template */; };
+		F8FE61162E75E42000014042 /* StaticVideoPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8FE61122E75E42000014042 /* StaticVideoPlayer.swift */; };
+		F8FE61172E75E42000014042 /* FirebaseStorageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8FE61102E75E42000014042 /* FirebaseStorageService.swift */; };
+		F8FE61182E75E42000014042 /* SerpAPIConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8FE61112E75E42000014042 /* SerpAPIConfig.swift */; };
+		F8FE611A2E75E44F00014042 /* DelayedTrackingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8FE61192E75E44000014042 /* DelayedTrackingService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -86,11 +94,19 @@
 		9BCCD2502E30A71F00545DD8 /* GoogleService-Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
 		B442D08FCB4A4DFC92A6DD51009C7AE5 /* Pleasent Poetry.mp3 */ = {isa = PBXFileReference; lastKnownFileType = audio.mp3; name = "Pleasent Poetry.mp3"; path = "Audio/Pleasent Poetry.mp3"; sourceTree = "<group>"; };
 		E964A22E3D7C4C25BE6D53920A85FD8B /* 10AM In The South.mp3 */ = {isa = PBXFileReference; lastKnownFileType = audio.mp3; name = "10AM In The South.mp3"; path = "Audio/10AM In The South.mp3"; sourceTree = "<group>"; };
-		F896D0B52E75332300196B76 /* AppUsageTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUsageTracker.swift; sourceTree = "<group>"; };
-		F896D0B72E75333800196B76 /* AudioManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioManager.swift; sourceTree = "<group>"; };
-		F896D0B92E75334800196B76 /* StreakManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreakManager.swift; sourceTree = "<group>"; };
 		F8BCEA022E33512A00197AD1 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.5.sdk/System/Library/Frameworks/UIKit.framework; sourceTree = DEVELOPER_DIR; };
-		F8C800282E399538000B3ED0 /* FirebaseStorageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseStorageService.swift; sourceTree = "<group>"; };
+		F8C800252E39885B000B3ED0 /* SerpAPIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SerpAPIService.swift; path = Thrifty/Services/SerpAPIService.swift; sourceTree = "<group>"; };
+		F8C800262E39885B000B3ED0 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Config.swift; path = Thrifty/Services/Config.swift; sourceTree = "<group>"; };
+		F8C800272E39885B000B3ED0 /* FirebaseStorageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FirebaseStorageService.swift; path = Thrifty/FirebaseStorageService.swift; sourceTree = "<group>"; };
+		F8FE60F22E75DD7C00014042 /* MixpanelService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixpanelService.swift; sourceTree = "<group>"; };
+		F8FE60FA2E75E16600014042 /* AppUsageTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUsageTracker.swift; sourceTree = "<group>"; };
+		F8FE61052E75E28900014042 /* ConsumptionRequestService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConsumptionRequestService.swift; sourceTree = "<group>"; };
+		F8FE610F2E75E42000014042 /* APIKeys.swift.template */ = {isa = PBXFileReference; lastKnownFileType = text; path = APIKeys.swift.template; sourceTree = "<group>"; };
+		F8FE61102E75E42000014042 /* FirebaseStorageService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseStorageService.swift; sourceTree = "<group>"; };
+		F8FE61112E75E42000014042 /* SerpAPIConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SerpAPIConfig.swift; sourceTree = "<group>"; };
+		F8FE61122E75E42000014042 /* StaticVideoPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StaticVideoPlayer.swift; sourceTree = "<group>"; };
+		F8FE61132E75E42000014042 /* Subscriptions.storekit */ = {isa = PBXFileReference; lastKnownFileType = text; path = Subscriptions.storekit; sourceTree = "<group>"; };
+		F8FE61192E75E44000014042 /* DelayedTrackingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DelayedTrackingService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -98,14 +114,16 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				F896D0B42E752E4900196B76 /* GoogleMaps in Frameworks */,
+				F896D0C22E75C11B00196B76 /* ConfettiSwiftUI in Frameworks */,
+				F896D0C42E75C3B100196B76 /* FirebaseAuth in Frameworks */,
+				F896D0CA2E75C3B100196B76 /* FirebaseStorage in Frameworks */,
+				F896D0BF2E75C06600196B76 /* GoogleMaps in Frameworks */,
+				F896D0C82E75C3B100196B76 /* FirebaseFunctions in Frameworks */,
 				F8BCEA032E33512A00197AD1 /* UIKit.framework in Frameworks */,
+				F8FE60EA2E75DBE800014042 /* Mixpanel in Frameworks */,
 				9B932B872E2968D800549AE9 /* StoreKit.framework in Frameworks */,
-				9B471DA02E303EFC00113BCC /* FirebaseAuth in Frameworks */,
 				9B471DA32E30400A00113BCC /* GoogleSignIn in Frameworks */,
-				F8C800182E395B41000B3ED0 /* FirebaseStorage in Frameworks */,
-				9B0A9C2C2E31D920006C762E /* FirebaseFirestore in Frameworks */,
-				9BCCD2532E31665E00545DD8 /* FirebaseFunctions in Frameworks */,
+				F896D0C62E75C3B100196B76 /* FirebaseFirestore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -152,14 +170,19 @@
 		9B3114182E283071006BF7E6 /* Thrifty */ = {
 			isa = PBXGroup;
 			children = (
-				F896D0B52E75332300196B76 /* AppUsageTracker.swift */,
-				F8C800282E399538000B3ED0 /* FirebaseStorageService.swift */,
-				F896D0B92E75334800196B76 /* StreakManager.swift */,
+				F8FE61192E75E44000014042 /* DelayedTrackingService.swift */,
+				F8FE610F2E75E42000014042 /* APIKeys.swift.template */,
+				F8FE61102E75E42000014042 /* FirebaseStorageService.swift */,
+				F8FE61112E75E42000014042 /* SerpAPIConfig.swift */,
+				F8FE61122E75E42000014042 /* StaticVideoPlayer.swift */,
+				F8FE61132E75E42000014042 /* Subscriptions.storekit */,
+				F8FE61052E75E28900014042 /* ConsumptionRequestService.swift */,
+				F8FE60FA2E75E16600014042 /* AppUsageTracker.swift */,
+				F8FE60F22E75DD7C00014042 /* MixpanelService.swift */,
 				9BCCD2502E30A71F00545DD8 /* GoogleService-Info.plist */,
 				9B6A1D0E2E302A870089314F /* Thrifty-Info.plist */,
 				9B77E8DA2E2CBA9A0025E339 /* APIKeys.swift */,
 				9B77E8D72E2CBA9A0025E339 /* Config.swift */,
-				F896D0B72E75333800196B76 /* AudioManager.swift */,
 				9B77E8D92E2CBA9A0025E339 /* LyricServices.swift */,
 				9B77E8DB2E2CBA9A0025E339 /* OpenAIService.swift */,
 				9B77E8DC2E2CBA9A0025E339 /* ToolPrompts.swift */,
@@ -206,6 +229,9 @@
 		9B932B852E2968D800549AE9 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				F8C800262E39885B000B3ED0 /* Config.swift */,
+				F8C800272E39885B000B3ED0 /* FirebaseStorageService.swift */,
+				F8C800252E39885B000B3ED0 /* SerpAPIService.swift */,
 				F8BCEA022E33512A00197AD1 /* UIKit.framework */,
 				9B932B862E2968D800549AE9 /* StoreKit.framework */,
 			);
@@ -229,12 +255,14 @@
 			);
 			name = Thrifty;
 			packageProductDependencies = (
-				9B471D9F2E303EFC00113BCC /* FirebaseAuth */,
 				9B471DA22E30400A00113BCC /* GoogleSignIn */,
-				9BCCD2522E31665E00545DD8 /* FirebaseFunctions */,
-				9B0A9C2B2E31D920006C762E /* FirebaseFirestore */,
-				F8C800172E395B41000B3ED0 /* FirebaseStorage */,
-				F896D0B32E752E4900196B76 /* GoogleMaps */,
+				F896D0BE2E75C06600196B76 /* GoogleMaps */,
+				F896D0C12E75C11B00196B76 /* ConfettiSwiftUI */,
+				F896D0C32E75C3B100196B76 /* FirebaseAuth */,
+				F896D0C52E75C3B100196B76 /* FirebaseFirestore */,
+				F896D0C72E75C3B100196B76 /* FirebaseFunctions */,
+				F896D0C92E75C3B100196B76 /* FirebaseStorage */,
+				F8FE60E92E75DBE800014042 /* Mixpanel */,
 			);
 			productName = Thrifty;
 			productReference = 9B3114162E283071006BF7E6 /* Thrifty.app */;
@@ -311,7 +339,9 @@
 			packageReferences = (
 				9B471D9E2E303EFC00113BCC /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
 				9B471DA12E30400A00113BCC /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
-				F896D0B22E752E4900196B76 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */,
+				F896D0BD2E75C06600196B76 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */,
+				F896D0C02E75C11B00196B76 /* XCRemoteSwiftPackageReference "ConfettiSwiftUI" */,
+				F8FE60E82E75DBE800014042 /* XCRemoteSwiftPackageReference "mixpanel-swift" */,
 			);
 			productRefGroup = 9B3114172E283071006BF7E6 /* Products */;
 			projectDirPath = "";
@@ -335,6 +365,8 @@
 				9B0B8F1F2E2AC8C10028982B /* rhyme_database.sqlite in Resources */,
 				E964A22E3D7C4C25BE6D53920A85FD8A /* 10AM In The South.mp3 in Resources */,
 				313EA2470939424FB17E3EF1CBCA079F /* Better Mornings.mp3 in Resources */,
+				F8FE61142E75E42000014042 /* Subscriptions.storekit in Resources */,
+				F8FE61152E75E42000014042 /* APIKeys.swift.template in Resources */,
 				B442D08FCB4A4DFC92A6DD51009C7AE6 /* Pleasent Poetry.mp3 in Resources */,
 				1ABB18876684410BB4745E37B4F97AAD /* Run It Up.mp3 in Resources */,
 				5E3796BBEF284349845E6CB22F3AC65A /* Yacht Parties.mp3 in Resources */,
@@ -364,16 +396,20 @@
 			files = (
 				9B77E8E12E2CBA9A0025E339 /* OpenAIService.swift in Sources */,
 				9B77E8E02E2CBA9A0025E339 /* APIKeys.swift in Sources */,
-				F896D0B62E75332300196B76 /* AppUsageTracker.swift in Sources */,
 				9B31141C2E283071006BF7E6 /* ContentView.swift in Sources */,
+				F8FE611A2E75E44F00014042 /* DelayedTrackingService.swift in Sources */,
+				F8FE60F32E75DD8100014042 /* MixpanelService.swift in Sources */,
+				F8C800272E39885B000B3ED1 /* FirebaseStorageService.swift in Sources */,
 				9B77E8DF2E2CBA9A0025E339 /* LyricServices.swift in Sources */,
 				9B31141A2E283071006BF7E6 /* ThriftyApp.swift in Sources */,
 				9B77E8DD2E2CBA9A0025E339 /* Config.swift in Sources */,
-				F8C800292E399538000B3ED0 /* FirebaseStorageService.swift in Sources */,
 				9B77E8DE2E2CBA9A0025E339 /* ToolPromptService.swift in Sources */,
-				F896D0B82E75333800196B76 /* AudioManager.swift in Sources */,
+				F8FE61162E75E42000014042 /* StaticVideoPlayer.swift in Sources */,
+				F8FE61172E75E42000014042 /* FirebaseStorageService.swift in Sources */,
+				F8FE61182E75E42000014042 /* SerpAPIConfig.swift in Sources */,
 				9B77E8E22E2CBA9A0025E339 /* ToolPrompts.swift in Sources */,
-				F896D0BA2E75334800196B76 /* StreakManager.swift in Sources */,
+				F8FE60FB2E75E16600014042 /* AppUsageTracker.swift in Sources */,
+				F8FE61062E75E28900014042 /* ConsumptionRequestService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -530,6 +566,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = Thrifty/Thrifty.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
@@ -576,6 +613,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = Thrifty/Thrifty.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
@@ -628,7 +666,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				MACOSX_DEPLOYMENT_TARGET = 12.7;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.thrifty.thrifty.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.TrvzrWViGDUN.LyricsGenerator.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
@@ -650,7 +688,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				MACOSX_DEPLOYMENT_TARGET = 12.7;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.thrifty.thrifty.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.TrvzrWViGDUN.LyricsGenerator.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
@@ -671,9 +709,8 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				MACOSX_DEPLOYMENT_TARGET = 12.7;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.thrifty.thrifty.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.TrvzrWViGDUN.LyricsGenerator.uitests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				PROVISIONING_PROFILE = "";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -693,9 +730,8 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				MACOSX_DEPLOYMENT_TARGET = 12.7;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.thrifty.thrifty.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.TrvzrWViGDUN.LyricsGenerator.uitests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				PROVISIONING_PROFILE = "";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -763,7 +799,7 @@
 				minimumVersion = 7.0.0;
 			};
 		};
-		F896D0B22E752E4900196B76 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */ = {
+		F896D0BD2E75C06600196B76 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/googlemaps/ios-maps-sdk";
 			requirement = {
@@ -771,38 +807,64 @@
 				minimumVersion = 10.3.0;
 			};
 		};
+		F896D0C02E75C11B00196B76 /* XCRemoteSwiftPackageReference "ConfettiSwiftUI" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/simibac/ConfettiSwiftUI.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.3;
+			};
+		};
+		F8FE60E82E75DBE800014042 /* XCRemoteSwiftPackageReference "mixpanel-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mixpanel/mixpanel-swift";
+			requirement = {
+				branch = master;
+				kind = branch;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		9B0A9C2B2E31D920006C762E /* FirebaseFirestore */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 9B471D9E2E303EFC00113BCC /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseFirestore;
-		};
-		9B471D9F2E303EFC00113BCC /* FirebaseAuth */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 9B471D9E2E303EFC00113BCC /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseAuth;
-		};
 		9B471DA22E30400A00113BCC /* GoogleSignIn */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 9B471DA12E30400A00113BCC /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
 			productName = GoogleSignIn;
 		};
-		9BCCD2522E31665E00545DD8 /* FirebaseFunctions */ = {
+		F896D0BE2E75C06600196B76 /* GoogleMaps */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F896D0BD2E75C06600196B76 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */;
+			productName = GoogleMaps;
+		};
+		F896D0C12E75C11B00196B76 /* ConfettiSwiftUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F896D0C02E75C11B00196B76 /* XCRemoteSwiftPackageReference "ConfettiSwiftUI" */;
+			productName = ConfettiSwiftUI;
+		};
+		F896D0C32E75C3B100196B76 /* FirebaseAuth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 9B471D9E2E303EFC00113BCC /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAuth;
+		};
+		F896D0C52E75C3B100196B76 /* FirebaseFirestore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 9B471D9E2E303EFC00113BCC /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseFirestore;
+		};
+		F896D0C72E75C3B100196B76 /* FirebaseFunctions */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 9B471D9E2E303EFC00113BCC /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseFunctions;
 		};
-		F896D0B32E752E4900196B76 /* GoogleMaps */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = F896D0B22E752E4900196B76 /* XCRemoteSwiftPackageReference "ios-maps-sdk" */;
-			productName = GoogleMaps;
-		};
-		F8C800172E395B41000B3ED0 /* FirebaseStorage */ = {
+		F896D0C92E75C3B100196B76 /* FirebaseStorage */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 9B471D9E2E303EFC00113BCC /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseStorage;
+		};
+		F8FE60E92E75DBE800014042 /* Mixpanel */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F8FE60E82E75DBE800014042 /* XCRemoteSwiftPackageReference "mixpanel-swift" */;
+			productName = Mixpanel;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

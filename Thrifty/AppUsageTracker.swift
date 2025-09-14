@@ -1,84 +1,134 @@
-import SwiftUI
+//
+//  AppUsageTracker.swift
+//  Thrifty
+//
+//  Created by Eliana Silva on 9/13/25.
+//
+
 import Foundation
 
 class AppUsageTracker: ObservableObject {
-    @Published var sessionStartTime: Date?
-    @Published var totalUsageTime: TimeInterval = 0
-    @Published var dailyUsageTime: TimeInterval = 0
+    static let shared = AppUsageTracker()
     
-    private let usageKey = "AppUsageTracker_TotalUsage"
-    private let dailyUsageKey = "AppUsageTracker_DailyUsage"
-    private let lastResetDateKey = "AppUsageTracker_LastResetDate"
+    @Published var sessionStartTime: Date?
+    @Published var totalScans: Int = 0
+    @Published var totalAnalyses: Int = 0
+    @Published var totalFeatureUsage: [String: Int] = [:]
     
     init() {
-        loadUsageData()
-        startSession()
-        checkDailyReset()
+        // Initialize with safe defaults first
+        totalScans = 0
+        totalAnalyses = 0
+        totalFeatureUsage = [:]
+        
+        // Load data safely
+        DispatchQueue.main.async { [weak self] in
+            self?.loadUsageData()
+        }
+        
+        print("📱 AppUsageTracker: Initialized")
     }
     
+    // MARK: - Session Management
+    
     func startSession() {
+        guard sessionStartTime == nil else {
+            print("📱 AppUsageTracker: Session already active, skipping start")
+            return
+        }
+        
         sessionStartTime = Date()
+        print("📱 AppUsageTracker: Session started")
+        
+        // Track session start - safely handle Mixpanel initialization
+        DispatchQueue.main.async { [weak self] in
+            guard self?.sessionStartTime != nil else { return }
+            MixpanelService.shared.trackAppLaunched()
+        }
     }
     
     func endSession() {
         guard let startTime = sessionStartTime else { return }
         
         let sessionDuration = Date().timeIntervalSince(startTime)
-        totalUsageTime += sessionDuration
-        dailyUsageTime += sessionDuration
+        print("📱 AppUsageTracker: Session ended - Duration: \(sessionDuration) seconds")
         
-        saveUsageData()
+        // Track session end - safely on main thread
+        DispatchQueue.main.async {
+            MixpanelService.shared.setUserProperty(key: "last_session_duration", value: sessionDuration)
+        }
+        
         sessionStartTime = nil
-    }
-    
-    func getCurrentSessionDuration() -> TimeInterval {
-        guard let startTime = sessionStartTime else { return 0 }
-        return Date().timeIntervalSince(startTime)
-    }
-    
-    func getTotalUsageToday() -> TimeInterval {
-        return dailyUsageTime + getCurrentSessionDuration()
-    }
-    
-    func resetDailyUsage() {
-        dailyUsageTime = 0
-        UserDefaults.standard.set(Date(), forKey: lastResetDateKey)
         saveUsageData()
     }
     
-    private func checkDailyReset() {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
+    // MARK: - Feature Tracking
+    
+    func trackScan() {
+        totalScans += 1
+        saveUsageData()
+        print("📊 Scan tracked: \(totalScans) total scans")
         
-        let lastResetDate = UserDefaults.standard.object(forKey: lastResetDateKey) as? Date ?? Date.distantPast
-        let lastResetDay = calendar.startOfDay(for: lastResetDate)
+        // Track in Mixpanel - safely on main thread
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            MixpanelService.shared.setUserProperty(key: "total_scans", value: self.totalScans)
+        }
+    }
+    
+    func trackFeatureUsage(_ feature: String) {
+        totalFeatureUsage[feature, default: 0] += 1
+        saveUsageData()
+        print("📱 AppUsageTracker: Feature usage tracked - \(feature)")
         
-        if !calendar.isDate(today, inSameDayAs: lastResetDay) {
-            resetDailyUsage()
+        // Track in Mixpanel - safely on main thread
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            MixpanelService.shared.setUserProperty(key: "feature_usage_\(feature)", value: self.totalFeatureUsage[feature] ?? 0)
+        }
+    }
+    
+    func trackSuccessfulAnalysis() {
+        totalAnalyses += 1
+        saveUsageData()
+        print("📊 Successful analysis tracked: \(totalAnalyses) total")
+        
+        // Track in Mixpanel - safely on main thread
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            MixpanelService.shared.setUserProperty(key: "total_analyses", value: self.totalAnalyses)
+        }
+    }
+    
+    // MARK: - Data Persistence
+    
+    private func saveUsageData() {
+        UserDefaults.standard.set(totalScans, forKey: "app_usage_total_scans")
+        UserDefaults.standard.set(totalAnalyses, forKey: "app_usage_total_analyses")
+        
+        if let encoded = try? JSONEncoder().encode(totalFeatureUsage) {
+            UserDefaults.standard.set(encoded, forKey: "app_usage_feature_usage")
         }
     }
     
     private func loadUsageData() {
-        totalUsageTime = UserDefaults.standard.double(forKey: usageKey)
-        dailyUsageTime = UserDefaults.standard.double(forKey: dailyUsageKey)
-    }
-    
-    private func saveUsageData() {
-        UserDefaults.standard.set(totalUsageTime, forKey: usageKey)
-        UserDefaults.standard.set(dailyUsageTime, forKey: dailyUsageKey)
-    }
-    
-    func formatTime(_ time: TimeInterval) -> String {
-        let hours = Int(time) / 3600
-        let minutes = Int(time) % 3600 / 60
-        let seconds = Int(time) % 60
+        totalScans = UserDefaults.standard.integer(forKey: "app_usage_total_scans")
+        totalAnalyses = UserDefaults.standard.integer(forKey: "app_usage_total_analyses")
         
-        if hours > 0 {
-            return String(format: "%dh %dm %ds", hours, minutes, seconds)
-        } else if minutes > 0 {
-            return String(format: "%dm %ds", minutes, seconds)
-        } else {
-            return String(format: "%ds", seconds)
+        if let data = UserDefaults.standard.data(forKey: "app_usage_feature_usage"),
+           let decoded = try? JSONDecoder().decode([String: Int].self, from: data) {
+            totalFeatureUsage = decoded
         }
+    }
+    
+    // MARK: - Analytics
+    
+    func getUsageStats() -> [String: Any] {
+        return [
+            "total_scans": totalScans,
+            "total_analyses": totalAnalyses,
+            "feature_usage": totalFeatureUsage,
+            "current_session_duration": sessionStartTime?.timeIntervalSinceNow.magnitude ?? 0
+        ]
     }
 }

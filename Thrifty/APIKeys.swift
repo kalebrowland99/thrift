@@ -7,6 +7,9 @@ enum APIKeys {
     // Google Maps API Key - REPLACE WITH YOUR NEW RESTRICTED KEY FROM GOOGLE CLOUD CONSOLE
     static let googleMaps = ProcessInfo.processInfo.environment["GOOGLE_MAPS_API_KEY"] ?? "AIzaSyAsZDX3bHLr-f3Mi-m4spKNcw0j36XzoHQ"
     
+    // Mixpanel API Key - Get from: https://mixpanel.com > Project Settings > Project Token
+    static let mixpanel = ProcessInfo.processInfo.environment["MIXPANEL_TOKEN"] ?? "ebbb1549d50edc0a0dcfe619ed6f01e8"
+    
     // Facebook SDK Configuration - REAL FACEBOOK CREDENTIALS
     // Get these from: https://developers.facebook.com > Your App > Settings > Basic
     static let facebookAppID = ProcessInfo.processInfo.environment["FACEBOOK_APP_ID"] ?? "1313964556984936"

@@ -8,7 +8,7 @@
 import SwiftUI
 import StoreKit
 import AVKit
-// import ConfettiSwiftUI // TODO: Add package dependency
+import ConfettiSwiftUI
 import AVFoundation
 import PhotosUI
 import AuthenticationServices
@@ -1096,8 +1096,10 @@ class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
         locationManager.distanceFilter = 10 // Update when user moves 10 meters
         authorizationStatus = locationManager.authorizationStatus
         
-        // Start location tracking immediately
-        startLocationTracking()
+        // Defer location tracking to avoid TCC violations during app startup
+        DispatchQueue.main.async { [weak self] in
+            self?.startLocationTracking()
+        }
         
         // Track app lifecycle to maintain location services
         NotificationCenter.default.addObserver(
@@ -1902,7 +1904,10 @@ class SongManager: ObservableObject {
     }
     
     init() {
-        loadSongs()
+        // Defer heavy loading to avoid blocking the main thread
+        DispatchQueue.main.async { [weak self] in
+            self?.loadSongs()
+        }
     }
     
     func updateSong(_ song: Song) {
@@ -3687,8 +3692,6 @@ struct ConfettiPiece: View {
     }
 }
 
-// TODO: Add ConfettiSwiftUI package dependency
-/*
 struct ConfettiView: View {
     @State private var confettiPieces: [Int] = []
     
@@ -3724,7 +3727,6 @@ struct ConfettiView: View {
         }
     }
 }
-*/
 
 struct RatingView: View {
     @Environment(\.dismiss) var dismiss
@@ -4043,7 +4045,7 @@ struct CompletionView: View {
             
             // Confetti overlay
             if showConfetti {
-                // ConfettiView() // TODO: Add ConfettiSwiftUI package
+                ConfettiView()
             }
             
             VStack(spacing: 0) {
@@ -6548,7 +6550,7 @@ struct GoogleMapsView: UIViewRepresentable {
             
             // Track map interaction for consumption data
             DispatchQueue.main.async {
-                ConsumptionRequestService.shared.trackMapInteraction()
+                ConsumptionRequestService.shared.trackMapInteraction(interactionType: "map_viewed")
                 ConsumptionRequestService.shared.trackFeatureUsed("map_interaction")
             }
             
@@ -7582,7 +7584,7 @@ struct FinalCongratulationsView: View {
             
             // Confetti overlay
             if showConfetti {
-                // ConfettiView() // TODO: Add ConfettiSwiftUI package
+                ConfettiView()
             }
             
             VStack(spacing: 0) {
@@ -10203,7 +10205,10 @@ class ProfileManager: ObservableObject {
     private let customImageKey = "ProfileManager_CustomImage"
     
     init() {
-        loadUserData()
+        // Defer heavy loading to avoid blocking the main thread
+        DispatchQueue.main.async { [weak self] in
+            self?.loadUserData()
+        }
     }
     
     func updateUserName(_ name: String) {
@@ -10307,8 +10312,8 @@ struct MainAppView: View {
     @StateObject private var songManager = SongManager()
     @StateObject private var profileManager = ProfileManager()
     @StateObject private var streakManager = StreakManager()
-    @StateObject private var authManager = AuthenticationManager.shared
-    @StateObject private var usageTracker = AppUsageTracker()
+    @ObservedObject private var authManager = AuthenticationManager.shared
+    private let usageTracker = AppUsageTracker.shared
     @StateObject private var recentFindsManager = RecentFindsManager()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -10469,8 +10474,8 @@ struct MainAppView: View {
                 HStack(spacing: 0) {
                 tabBarContent
                     .padding(.horizontal, 20)
-                    .padding(.top, 10)
-                    .padding(.bottom, 10)
+                    .padding(.top, 12)
+                    .padding(.bottom, 16)
             }
             .background(tabBarBackground)
         }
@@ -10478,52 +10483,58 @@ struct MainAppView: View {
     
     // MARK: - Tab Bar Content
     private var tabBarContent: some View {
-        HStack {
-            // Home Tab
-            Button(action: { selectedTab = 0 }) {
-                VStack(spacing: 4) {
-                    Image(systemName: selectedTab == 0 ? "house.fill" : "house")
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundColor(selectedTab == 0 ? .black : .gray)
-                    Text("Home")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(selectedTab == 0 ? .black : .gray)
-                }
-            }
-            
-            Spacer()
-            
-            // Analytics Tab
-            Button(action: { selectedTab = 1 }) {
-                VStack(spacing: 4) {
-                    Image(systemName: selectedTab == 1 ? "chart.bar.fill" : "chart.bar")
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundColor(selectedTab == 1 ? .black : .gray)
-                    Text("Analytics")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(selectedTab == 1 ? .black : .gray)
-                }
-            }
-            
-            Spacer()
-            
-            // Settings Tab
-            Button(action: { selectedTab = 2 }) {
-                VStack(spacing: 4) {
-                    Image(systemName: selectedTab == 2 ? "gearshape.fill" : "gearshape")
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundColor(selectedTab == 2 ? .black : .gray)
-                    Text("Settings")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(selectedTab == 2 ? .black : .gray)
-                }
-            }
-            
-            Spacer()
-            
-            // Plus button positioned on the right edge
-            plusButton
-                .offset(x: 0, y: -28) // Move up to sit on top of tab bar
+                    HStack(spacing: 0) {
+                        // Left side - group the 3 main tabs with better spacing
+                        HStack(spacing: 45) { // Spacing between tab items
+                            // Home Tab
+                            Button(action: { selectedTab = 0 }) {
+                                VStack(spacing: 4) {
+                                    Image(systemName: selectedTab == 0 ? "house.fill" : "house")
+                                        .font(.system(size: 20, weight: .medium))
+                                        .foregroundColor(selectedTab == 0 ? .black : .gray)
+                                    
+                                    Text("Home")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(selectedTab == 0 ? .black : .gray)
+                                }
+                            }
+                            
+                            // Analytics Tab (Bar Chart Icon)
+                            Button(action: { selectedTab = 1 }) {
+                                VStack(spacing: 4) {
+                                    Image(systemName: selectedTab == 1 ? "chart.bar.fill" : "chart.bar")
+                                        .font(.system(size: 20, weight: .medium))
+                                        .foregroundColor(selectedTab == 1 ? .black : .gray)
+                                    
+                                    Text("Analytics")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(selectedTab == 1 ? .black : .gray)
+                                }
+                            }
+                            
+                            // Settings Tab (changed from Profile to match your design)
+                            Button(action: { selectedTab = 2 }) {
+                                VStack(spacing: 4) {
+                                    Image(systemName: selectedTab == 2 ? "gearshape.fill" : "gearshape")
+                                        .font(.system(size: 20, weight: .medium))
+                                        .foregroundColor(selectedTab == 2 ? .black : .gray)
+                                    
+                                    Text("Settings")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(selectedTab == 2 ? .black : .gray)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, 32) // More padding from edge for home icon
+                        
+                        // Right side - Plus button moved more to the left
+                        HStack {
+                            Spacer()
+                            plusButton
+                                .offset(x: -20, y: -32) // Move left and up to sit on top of tab bar
+                        }
+                        .frame(width: 80) // Wider frame to accommodate left offset
         }
     }
     
@@ -10951,9 +10962,12 @@ class StreakManager: ObservableObject {
     private let lastAppOpenKey = "StreakManager_LastAppOpen"
     
     init() {
-        loadData()
-        trackAppOpening()
-        updateStreak()
+        // Defer heavy operations to avoid blocking the main thread
+        DispatchQueue.main.async { [weak self] in
+            self?.loadData()
+            self?.trackAppOpening()
+            self?.updateStreak()
+        }
     }
     
     // Get the current effective date (real date + debug offset)
@@ -12591,17 +12605,19 @@ class AudioManager: ObservableObject, Equatable {
         setupAudioSession()
     }
     
-    static func == (lhs: AudioManager, rhs: AudioManager) -> Bool {
-        return lhs === rhs
+    private func setupAudioSession() {
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playback, mode: .default, options: [])
+            try audioSession.setActive(true)
+            print("🔊 Audio session configured successfully")
+        } catch {
+            print("❌ Failed to setup audio session: \(error.localizedDescription)")
+        }
     }
     
-    func setupAudioSession() {
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch {
-            print("Failed to setup audio session: \(error)")
-        }
+    static func == (lhs: AudioManager, rhs: AudioManager) -> Bool {
+        return lhs === rhs
     }
     
     func loadAudio(from url: URL) {
@@ -17899,7 +17915,10 @@ class CameraManager: NSObject, ObservableObject {
     
     override init() {
         super.init()
-        checkCameraPermission()
+        // Defer camera permission check to avoid TCC violations during app startup
+        DispatchQueue.main.async { [weak self] in
+            self?.checkCameraPermission()
+        }
     }
     
     func checkCameraPermission() {
@@ -18528,6 +18547,7 @@ struct RecentFindsPageView: View {
     @State private var showConfetti: Bool = false
     @State private var showFirstTimeNotification: Bool = false
     @State private var showWelcomeConfetti: Bool = false
+    @State private var profitIncreaseFromSelling: Bool = false
     
     var totalProfits: Double {
         return profileManager.calculateTotalProfit(from: songManager)
@@ -18602,7 +18622,7 @@ struct RecentFindsPageView: View {
                 }
                 
                 if showConfetti {
-                    // ConfettiView() // TODO: Add ConfettiSwiftUI package
+                    ConfettiView()
                         .allowsHitTesting(false)
                 }
                 
@@ -18619,7 +18639,7 @@ struct RecentFindsPageView: View {
                     
                     // Welcome confetti overlay
                     if showWelcomeConfetti {
-                        // ConfettiView() // TODO: Add ConfettiSwiftUI package
+                        ConfettiView()
                             .allowsHitTesting(false)
                     }
                     
@@ -18675,13 +18695,21 @@ struct RecentFindsPageView: View {
             .navigationBarHidden(true)
             .onChange(of: totalProfits) { newValue in
                 // Only trigger confetti if profit actually increased and both values are positive
-                if newValue > previousTotalProfits && previousTotalProfits > 0 && newValue > 0 {
+                // AND it's from a selling price update (not purchase price adjustment)
+                if newValue > previousTotalProfits && previousTotalProfits > 0 && newValue > 0 && profitIncreaseFromSelling {
                     showConfetti = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                         showConfetti = false
                     }
                 }
                 previousTotalProfits = newValue
+                // Reset the flag after checking
+                profitIncreaseFromSelling = false
+            }
+            .onChange(of: profileManager.profitRefreshTrigger) { _ in
+                // Check if this update is from a selling price change
+                // We'll set a flag when selling price is updated
+                checkIfProfitIncreaseFromSelling()
             }
             .onAppear {
                 previousTotalProfits = totalProfits
@@ -18706,6 +18734,19 @@ struct RecentFindsPageView: View {
             }
         }
         .navigationViewStyle(StackNavigationViewStyle())
+    }
+    
+    private func checkIfProfitIncreaseFromSelling() {
+        // Check if any selling price was recently updated (within last 2 seconds)
+        let lastUpdateTime = UserDefaults.standard.double(forKey: "lastSellPriceUpdate")
+        let now = Date().timeIntervalSince1970
+        let timeSinceLastUpdate = now - lastUpdateTime
+        
+        if timeSinceLastUpdate <= 2.0 && lastUpdateTime > 0 {
+            profitIncreaseFromSelling = true
+            // Clear the flag so it doesn't trigger again
+            UserDefaults.standard.removeObject(forKey: "lastSellPriceUpdate")
+        }
     }
 }
 
@@ -19293,6 +19334,10 @@ struct VerticalAlbumCard: View {
             UserDefaults.standard.removeObject(forKey: "profitOverride_\(song.id)")
             UserDefaults.standard.set(false, forKey: "useCustomProfit_\(song.id)")
         }
+        
+        // Mark that a selling price was just updated (for confetti logic)
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "lastSellPriceUpdate")
+        
         // Trigger profile refresh for real-time updates
         profileManager.triggerProfitRefresh()
     }
